@@ -1,0 +1,31 @@
+#!/bin/sh
+
+RUNDIR=`pwd`
+LOC="/home/zenol/developpez/kit"
+
+if [[ $1 != "" ]]
+then
+    NAME="${1%.*}"
+    echo "---------- XML VALIDATION ----------"
+    VALIDATE=`xmllint --noout --schema  $LOC/xsd/article.xsd $NAME.xml`
+    echo "------------------------------------"
+
+    mkdir -p $LOC"/documents/"$NAME
+    mkdir -p $LOC"/documents/"$NAME"/images"
+    mkdir -p $LOC"/documents/"$NAME"/fichiers"
+
+    cp "./"$NAME".xml" $LOC"/documents/"$NAME"/"
+    cp -r "./fichiers/" $LOC"/documents/"$NAME"/"
+    cp -r "./images/" $LOC"/documents/"$NAME"/"
+
+    cd $LOC"/script/"
+    ./buildart $NAME
+    cd -
+
+    mkdir -p ./html
+    mkdir -p ./php
+    cp -r $LOC"/cache/"$NAME"/"* ./php/
+    cp -r $LOC"/html/"$NAME"/"* ./html/
+else
+    echo $0 " article_name"
+fi

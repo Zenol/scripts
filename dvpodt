@@ -1,0 +1,25 @@
+#!/bin/sh
+
+RUNDIR=`pwd`
+LOC="/home/zenol/developpez/kit"
+
+if [[ $1 != "" ]]
+then
+    NAME="${1%.*}"
+    mkdir -p $LOC"/documents/"$NAME
+    mkdir -p $LOC"/documents/"$NAME"/images"
+    mkdir -p $LOC"/documents/"$NAME"/fichiers"
+
+    cp "./"$NAME".xml" $LOC"/documents/"$NAME"/"
+    cp -r "./fichiers/" $LOC"/documents/"$NAME"/"
+    cp -r "./images/" $LOC"/documents/"$NAME"/"
+
+    cd $LOC"/kitodt/"
+    ./buildodt.sh $NAME
+
+    echo "CP : " $LOC"/odt/"$NAME".odt" ./
+    cd $RUNDIR
+    cp $LOC"/odt/"$NAME".odt" ./
+else
+    echo $0 " article_name"
+fi

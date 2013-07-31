@@ -18,14 +18,6 @@ then
     cp -r "./fichiers/" $LOC"/documents/"$NAME"/"
     cp -r "./images/" $LOC"/documents/"$NAME"/"
 
-    cd $LOC"/script/"
-    ./buildart $NAME
-    cd -
-
-    mkdir -p ./html
-    mkdir -p ./php
-    cp -r $LOC"/cache/"$NAME"/"* ./php/
-    cp -r $LOC"/html/"$NAME"/"* ./html/
 else
     echo $0 " article_name.xml"
 fi

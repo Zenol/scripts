@@ -22,6 +22,7 @@ import qualified Data.Text.Encoding as T
 import qualified Data.ByteString.Char8 as B
 
 -- TYPES
+import Control.Monad
 import Control.Monad.Trans.State
 import Control.Monad.IO.Class
 import Control.Exception.Base
@@ -174,45 +175,51 @@ process e = case eNick e of
     _       -> return ()
 
 processPrivmsg :: Event -> BotSt ()
-processPrivmsg e = processCmd (eMessage e) e
+processPrivmsg e = (mapM_ (sendMsg (answ e))) =<< (processCmd False (eMessage e) e)
 
-processCmd :: String -> Event -> BotSt ()
-processCmd s e
+-- y == true if it's a sub string of a command.
+-- (used by !reverse to know we should return [s]
+processCmd :: Bool -> String -> Event -> BotSt [String]
+processCmd y s e
   | s == nick ++ "> Part loin et ne reviens jamais!" = do
     write "QUIT" ":\"Je vais me cacher...\""
     liftIO $ exitWith ExitSuccess
-processCmd s e
+    return []
+processCmd y s e
   | "!length " `isPrefixOf` s = do
-    sendMsg (answ e) (show . length . drop 8 $ s)
-processCmd s e
+    return [show . length . drop 8 $ s]
+processCmd y s e
   | "!google " `isPrefixOf` s = do
-    google e (drop (length "!google ") s)
-processCmd "!dance" e = do
+    concatMapM (google e) =<< (processCmd True (drop (length "!google ") s) e)
+processCmd y "!dance" e = do
     string <- gets dance
-    sendMsg (answ e) string
     modify updateDance
-processCmd "!help" e = do
-  sendMsg (answ e) "Je connais !dance, !uptime, !time, !reverse, !google et !quit."
-processCmd "!uptime" e = do
+    return [string]
+processCmd y "!help" e = do
+  return ["Je connais !dance, !uptime, !time, !reverse, !google et !quit."]
+processCmd y "!uptime" e = do
   now <- liftIO $ getClockTime
   start <- gets startTime
-  sendMsg (answ e) (displayTime $ diffClockTimes now start)
-processCmd s e
+  return [displayTime $ diffClockTimes now start]
+processCmd y s e
   | "tulas" `isInfixOf` s = do
-    sendMsg (answ e) "Tulas à vous!"
-processCmd "!time" e = do
+    return ["Tulas à vous!"]
+processCmd y "!time" e = do
   now <- liftIO $ toCalendarTime =<< getClockTime
-  sendMsg (answ e) (displayCalendar now)
-processCmd "!quit" e
+  return [displayCalendar now]
+processCmd y "!quit" e
   | (eNick e) == "Zenol" = do
     write "QUIT" ":\"Snif ...\""
     liftIO $ exitWith ExitSuccess
-processCmd s e
+processCmd y s e
   | "!reverse " `isPrefixOf` s = do
-    sendMsg (answ e) (utf8Reverse . drop 9 $ s)
-processCmd s e = case eDest e of
-    x | x == nick -> sendMsg (eNick e) "Je ne suis pas complètement implémenté :("
-    _             -> liftIO $ putStr "Not interpreted : " >> putStrLn s
+    fmap (map utf8Reverse) $ processCmd True (drop 9 $ s) e
+processCmd y s e = case eDest e of
+    x | x == nick && y == False
+                  -> return ["Je ne suis pas complètement implémenté :("]
+    _             -> if y then return [s] else do
+      liftIO $ putStr "Not interpreted : " >> putStrLn s
+      return []
 
 sendMsg :: String -> String -> BotSt ()
 sendMsg nick msg = write "PRIVMSG" (nick ++ " :" ++ msg)
@@ -250,7 +257,7 @@ answ e = case eDest e of
   x | x == nick -> eNick e
   _             -> chan
 
-google :: Event -> String -> BotSt ()
+google :: Event -> String -> BotSt [String]
 google e query = do
   (code, string) <- liftIO $ C.curlGetString
                     ("https://www.google.fr/search?q=" ++ (escapeURIString isReserved query)) []
@@ -258,11 +265,11 @@ google e query = do
     C.CurlOK -> parseGoogle string
     _        -> do
       liftIO . putStrLn $ string
-      sendMsg (answ e) ("Query failed with " ++ (show code))
+      return ["Query failed with " ++ (show code)]
   where
     parseGoogle string = do
       dtList <- liftIO $ ioDt
-      mapM_ (sendMsg (answ e)) dtList
+      return dtList
       where
         doc = readString [withParseHTML yes, withWarnings no] string
         ioDt = fmap (fmap format . take 3) $ runX $
@@ -270,3 +277,5 @@ google e query = do
              ((arr concat <<< listA (deep getText)) &&& getAttrValue "href")
         format (a, b) = (show a) ++ " : " ++ (takeWhile ('&'/=) . drop (length "/url?q=") $ b)
 
+concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
+concatMapM f = liftM concat . mapM f

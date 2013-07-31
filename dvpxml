@@ -10,5 +10,5 @@ then
     VALIDATE=`xmllint --noout --schema  $LOC/xsd/article.xsd $NAME.xml`
     echo "------------------------------------"
 else
-    echo $0 " article_name"
+    echo $0 " article_name.xml"
 fi

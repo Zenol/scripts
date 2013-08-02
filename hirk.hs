@@ -21,6 +21,7 @@ import Data.List
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.ByteString.Char8 as B
+import Data.Char (isSpace)
 
 -- TYPES
 import Control.Monad
@@ -195,15 +196,30 @@ processCmd y s e
   | "!google " `isPrefixOf` s = do
     concatMapM (google e) =<< (processCmd True (drop (length "!google ") s) e)
 processCmd y s e
-  | "php> " `isPrefixOf` s = do
-    runPhp (drop (length "php ") s)
+  | "php>" `isPrefixOf` s = do
+    runPhp (drop (length "php>") s)
+processCmd y s e
+  | "lua>" `isPrefixOf` s = do
+    runLua (drop (length "lua>") s)
+processCmd y s e
+  | "python>" `isPrefixOf` s = do
+    runPython (drop (length "python>") s)
+processCmd y s e
+  | "perl>" `isPrefixOf` s = do
+    runPerl (drop (length "perl>") s)
+processCmd y s e
+  | "ruby>" `isPrefixOf` s = do
+    runRuby (drop (length "ruby>") s)
+processCmd y s e
+  | "c>" `isPrefixOf` s = do
+    runC (drop (length "c>") s)
 processCmd y "!dance" e = do
     string <- gets dance
     modify updateDance
     return [string]
 processCmd y "!help" e = do
   return ["Je connais !dance, !uptime, !time, !reverse, !google, !bestwebsite et !quit.",
-          "Je peux aussi interpréter du php avec 'php> echo \"hello\";'."]
+          "Je peux aussi interpréter du php/perl avec 'php> echo \"hello\";'."]
 processCmd y "!uptime" e = do
   now <- liftIO $ getClockTime
   start <- gets startTime
@@ -235,6 +251,7 @@ sendMsg nick msg = write "PRIVMSG" (nick ++ " :" ++ msg)
 
 
 --- Usefull stuff
+rstrip = reverse . dropWhile isSpace . reverse
 
 limit :: Int -> String -> String
 limit n s = if length s > n then
@@ -297,37 +314,59 @@ concatMapM f = liftM concat . mapM f
 
 
 -- Run things
-runPhp :: String -> BotSt ([String])
-runPhp phpString = do
+type Language = String
+type Interpretor = String
+runScript :: Language -> Interpretor -> String -> BotSt ([String])
+runScript language interpretor scriptString = do
   let cmd  = "timelimit"
   let args = ["-t1",
               "timeout", "-sSIGKILL", "1.1",
               "safe_chroot", chrootdir,
               "timeout", "-sSIGKILL", "1.1",
-              "/bin/php"
+              "env", "LANG=C",
+              "env", "PYTHONHOME=/room/"
+              interpretor
              ]
-  let input = "<?php " ++ phpString
+  let input = scriptString
   (exitCode, stdout, stderr) <- liftIO $ readProcessWithExitCode cmd args input
   let output = case stderr of
         "" -> lines $ case stdout of
-                        "" -> "PHP executed."
+                        "" -> language ++ " executed."
                         _  -> stdout
         _  -> lines $ case stderr of
               _ | "timelimit:" `isPrefixOf` stderr
                   -> "PHP timed out..."
               _   -> stderr
   -- Log command
-  hirkLog "run_php" $ foldl (\a b -> a ++ " " ++ b) cmd args
-  hirkLog "run_php" $ (take 300 stdout) ++ (take 300 stderr)
+  hirkLog ("run_" ++ language) $ foldl (\a b -> a ++ " " ++ b) cmd args
+  hirkLog ("run_" ++ language) $ (take 300 stdout) ++ (take 300 stderr)
   -- Return output (limited to 3 lines)
   return $ take 3 . fmap (limit 100) $ output
 
+runPhp :: String -> BotSt ([String])
+runPhp = runScript "PHP" "/bin/php" . (++) "<?php "
+
+runLua :: String -> BotSt ([String])
+runLua = runScript "Lua" "/bin/lua"
+
+runPerl :: String -> BotSt ([String])
+runPerl = runScript "Perl" "/bin/perl"
+
+runRuby :: String -> BotSt ([String])
+runRuby = runScript "Ruby" "/bin/ruby"
+
+runC :: String -> BotSt ([String])
+runC = runScript "C" "/bin/picoc"
+
+runPython :: String -> BotSt ([String])
+runPython = runScript "Python" "/bin/python3"
 
 -- Logs
 hirkLog :: String -> String -> BotSt ()
 hirkLog name message = do
-  liftIO $ appendFile logFile $ name' ++ message' ++ "\n"
-  liftIO $ putStrLn $ name' ++ message'
+  liftIO $ appendFile logFile output
+  liftIO $ putStrLn output
   where
     name' = "<" ++ name ++ ">: "
     message' = message
+    output = rstrip (name' ++ message' ++ "\n")

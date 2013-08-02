@@ -68,6 +68,7 @@ port      = 6667
 chan      = "#gcn"
 nick      = "Hirk"
 chrootdir = "/home/zenol/hirk_chroot/"
+logFile   = "hirk.log"
 
 ----
 ---- Main implementation
@@ -111,7 +112,7 @@ write :: String -> String -> BotSt ()
 write s t = do
   h <- gets socket
   liftIO $ hPrintf h "%s %s\r\n" s t
-  liftIO $ printf    "> %s %s\n" s t
+  hirkLog "output" $ printf "%s %s\n" s t
 
 
 listen :: BotSt ()
@@ -201,7 +202,8 @@ processCmd y "!dance" e = do
     modify updateDance
     return [string]
 processCmd y "!help" e = do
-  return ["Je connais !dance, !uptime, !time, !reverse, !google et !quit."]
+  return ["Je connais !dance, !uptime, !time, !reverse, !google, !bestwebsite et !quit.",
+          "Je peux aussi interpréter du php avec 'php> echo \"hello\";'."]
 processCmd y "!uptime" e = do
   now <- liftIO $ getClockTime
   start <- gets startTime
@@ -212,6 +214,8 @@ processCmd y s e
 processCmd y "!time" e = do
   now <- liftIO $ toCalendarTime =<< getClockTime
   return [displayCalendar now]
+processCmd y "!bestwebsite" e = do
+  return ["http://zenol.fr biensur!"]
 processCmd y "!quit" e
   | (eNick e) == "Zenol" = do
     write "QUIT" ":\"Snif ...\""
@@ -223,7 +227,7 @@ processCmd y s e = case eDest e of
     x | x == nick && y == False
                   -> return ["Je ne suis pas complètement implémenté :("]
     _             -> if y then return [s] else do
-      liftIO $ putStr "Not interpreted : " >> putStrLn s
+      hirkLog "not_interpreted" s
       return []
 
 sendMsg :: String -> String -> BotSt ()
@@ -275,7 +279,7 @@ google e query = do
   case code of
     C.CurlOK -> parseGoogle string
     _        -> do
-      liftIO . putStrLn $ string
+      hirkLog "google" $ string
       return ["Query failed with " ++ (show code)]
   where
     parseGoogle string = do
@@ -296,10 +300,10 @@ concatMapM f = liftM concat . mapM f
 runPhp :: String -> BotSt ([String])
 runPhp phpString = do
   let cmd  = "timelimit"
-  let args = ["-t2",
-              "timeout", "-sSIGKILL", "3",
+  let args = ["-t1",
+              "timeout", "-sSIGKILL", "1.1",
               "safe_chroot", chrootdir,
-              "timeout", "-sSIGKILL", "3",
+              "timeout", "-sSIGKILL", "1.1",
               "/bin/php"
              ]
   let input = "<?php " ++ phpString
@@ -308,10 +312,13 @@ runPhp phpString = do
         "" -> lines $ case stdout of
                         "" -> "PHP executed."
                         _  -> stdout
-        _  -> lines $ stderr
+        _  -> lines $ case stderr of
+              _ | "timelimit:" `isPrefixOf` stderr
+                  -> "PHP timed out..."
+              _   -> stderr
   -- Log command
   hirkLog "run_php" $ foldl (\a b -> a ++ " " ++ b) cmd args
-  hirkLog "run_php" $ stdout ++ stderr
+  hirkLog "run_php" $ (take 300 stdout) ++ (take 300 stderr)
   -- Return output (limited to 3 lines)
   return $ take 3 . fmap (limit 100) $ output
 
@@ -319,6 +326,7 @@ runPhp phpString = do
 -- Logs
 hirkLog :: String -> String -> BotSt ()
 hirkLog name message = do
+  liftIO $ appendFile logFile $ name' ++ message' ++ "\n"
   liftIO $ putStrLn $ name' ++ message'
   where
     name' = "<" ++ name ++ ">: "

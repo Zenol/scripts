@@ -11,6 +11,7 @@ int main(int argc, char* argv[])
         printf("Failed to launch process...\n");
         return 0;
     }
+
     if (chdir(argv[1]) < 0)
     {
         printf("Failed to launch process...\n");
@@ -30,6 +31,7 @@ int main(int argc, char* argv[])
         //perror("setuid failed");
         return 1;
     }
+    chdir("/room/");
     execvp(argv[2], argv+2);
     return 0;
 }

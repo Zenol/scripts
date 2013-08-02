@@ -9,6 +9,7 @@ import System.IO
 import Text.Printf
 import System.Exit
 import System.Time
+import System.Process
 
 -- Web
 import qualified Network.Curl as C
@@ -62,10 +63,11 @@ updateDance b
 ---- Bot config
 ----
 
-server = "irc.langochat.fr"
-port   = 6667
-chan   = "#gcn"
-nick   = "Hirk"
+server    = "irc.langochat.fr"
+port      = 6667
+chan      = "#gcn"
+nick      = "Hirk"
+chrootdir = "/home/zenol/hirk_chroot/"
 
 ----
 ---- Main implementation
@@ -191,6 +193,9 @@ processCmd y s e
 processCmd y s e
   | "!google " `isPrefixOf` s = do
     concatMapM (google e) =<< (processCmd True (drop (length "!google ") s) e)
+processCmd y s e
+  | "php> " `isPrefixOf` s = do
+    runPhp (drop (length "php ") s)
 processCmd y "!dance" e = do
     string <- gets dance
     modify updateDance
@@ -226,6 +231,12 @@ sendMsg nick msg = write "PRIVMSG" (nick ++ " :" ++ msg)
 
 
 --- Usefull stuff
+
+limit :: Int -> String -> String
+limit n s = if length s > n then
+              (take (n - 3) s) ++ "..."
+            else
+              s
 
 utf8Reverse :: String -> String
 utf8Reverse = B.unpack . T.encodeUtf8 . T.reverse . T.decodeUtf8 . B.pack
@@ -279,3 +290,36 @@ google e query = do
 
 concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
 concatMapM f = liftM concat . mapM f
+
+
+-- Run things
+runPhp :: String -> BotSt ([String])
+runPhp phpString = do
+  let cmd  = "timelimit"
+  let args = ["-t2",
+              "timeout", "-sSIGKILL", "3",
+              "safe_chroot", chrootdir,
+              "timeout", "-sSIGKILL", "3",
+              "/bin/php"
+             ]
+  let input = "<?php " ++ phpString
+  (exitCode, stdout, stderr) <- liftIO $ readProcessWithExitCode cmd args input
+  let output = case stderr of
+        "" -> lines $ case stdout of
+                        "" -> "PHP executed."
+                        _  -> stdout
+        _  -> lines $ stderr
+  -- Log command
+  hirkLog "run_php" $ foldl (\a b -> a ++ " " ++ b) cmd args
+  hirkLog "run_php" $ stdout ++ stderr
+  -- Return output (limited to 3 lines)
+  return $ take 3 . fmap (limit 100) $ output
+
+
+-- Logs
+hirkLog :: String -> String -> BotSt ()
+hirkLog name message = do
+  liftIO $ putStrLn $ name' ++ message'
+  where
+    name' = "<" ++ name ++ ">: "
+    message' = message

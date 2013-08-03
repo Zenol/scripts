@@ -67,7 +67,7 @@ updateDance b
 server    = "irc.langochat.fr"
 port      = 6667
 chan      = "#gcn"
-nick      = "Hirk_Dev"
+nick      = "Hirk"
 chrootdir = "/home/zenol/hirk_chroot/"
 logFile   = "hirk.log"
 
@@ -434,8 +434,8 @@ runPython = runScript "Python" "/bin/python3"
 hirkLog :: String -> String -> BotSt ()
 hirkLog name message = do
   liftIO $ appendFile logFile output
-  liftIO $ putStrLn output
+  liftIO $ putStr output
   where
     name' = "<" ++ name ++ ">: "
     message' = message
-    output = rstrip (name' ++ message' ++ "\n")
+    output = (++ "\n") $ rstrip (name' ++ message' ++ "\n")

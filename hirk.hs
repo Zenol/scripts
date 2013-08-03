@@ -1,8 +1,5 @@
 #!/usr/bin/runhaskell
 
-{-# LANGUAGE RankNTypes #-}
-
-
 -- System :
 import Network
 import System.IO
@@ -10,6 +7,7 @@ import Text.Printf
 import System.Exit
 import System.Time
 import System.Process
+import System.Locale (defaultTimeLocale)
 
 -- Web
 import qualified Network.Curl as C
@@ -17,6 +15,7 @@ import Network.URI (isReserved, escapeURIString)
 import Text.XML.HXT.Core
 
 -- Data
+import Data.Maybe (maybe, fromMaybe)
 import Data.List
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -29,23 +28,33 @@ import Control.Monad.Trans.State
 import Control.Monad.IO.Class
 import Control.Exception.Base
 
+----
+---- Bot config
+----
+server    = "irc.langochat.fr"
+port      = 6667
+chan      = "#gcn"
+nick      = "Hirk"
+chrootdir = "/home/zenol/hirk_chroot/"
+logFile   = "hirk.log"
+
+-- The Bot Monad --
+type BotSt = StateT Bot IO
+
 data Bot = Bot
            { socket      :: Handle
            , startTime   :: ClockTime
            , danceState  :: Dance
            }
 
-type BotSt = StateT Bot IO
-
-data Dance = DLeft | DRight | DMiddleL | DMiddleR deriving (Show, Eq)
-
--- Usefull functions
 botGetLine :: BotSt String
 botGetLine = do
   h <- gets socket
   liftIO $ hGetLine h
 
 -- Funny stuff
+data Dance = DLeft | DRight | DMiddleL | DMiddleR deriving (Show, Eq)
+
 dance :: Bot -> String
 dance b
   | danceState b == DLeft     = "<(^.^<)"
@@ -60,20 +69,9 @@ updateDance b
   | danceState b == DRight   = b {danceState = DMiddleR}
   | danceState b == DMiddleR = b {danceState = DLeft}
 
-----
----- Bot config
-----
-
-server    = "irc.langochat.fr"
-port      = 6667
-chan      = "#gcn"
-nick      = "Hirk"
-chrootdir = "/home/zenol/hirk_chroot/"
-logFile   = "hirk.log"
-
-----
----- Main implementation
-----
+------------------------------
+---- IRC Connection Stuff ----
+------------------------------
 
 main :: IO ()
 main = bracket connect disconnect runState
@@ -100,6 +98,7 @@ waitForAnswer = do
     True  -> return ()
     False -> waitForAnswer
 
+-- | The true entry point of the bot :)
 run :: BotSt ()
 run = do
   write "NICK" nick
@@ -108,23 +107,22 @@ run = do
   write "JOIN" chan
   listen
 
-
+-- | Write an IRC message
 write :: String -> String -> BotSt ()
 write s t = do
   h <- gets socket
   liftIO $ hPrintf h "%s %s\r\n" s t
   hirkLog "output" $ printf "%s %s\n" s t
 
-
+-- | Listen for an IRC message. Display it and give it to 'process'
 listen :: BotSt ()
 listen = do
   s <- botGetLine
   liftIO $ putStrLn s
-  case ircSplit $ s of
-    Just a -> process a
-    _      -> ping s
+  maybe (ping s) process (ircSplit s)
   listen
 
+-- | Answer to a ping message if s is a PING query
 ping :: String -> BotSt ()
 ping s = case ("PING :" `isPrefixOf` s) of
   True  -> write "PONG" (':' : drop 6 s)
@@ -150,7 +148,6 @@ data Event = Event
              }
 
 ircSplit :: String -> Maybe Event
-
 ircSplit (':' : s) = result
   where
     result = case tail of
@@ -161,13 +158,13 @@ ircSplit (':' : s) = result
     (cmdString, tail'') = break (' '==) . drop 1 $ tail'
     (dest, tail''')     = break (' '==) . drop 1 $ tail''
     msg                 = drop 1 . takeWhile ('\r'/=) . dropWhile (':'/=) $ tail'''
-
 ircSplit _ = Nothing
 
 ----
 ---- React to messages
 ----
 
+-- | Ignore SecureServ, call processPrivmsg on Privmsg
 process :: Event -> BotSt ()
 process e = case eNick e of
   -- Ignore SecureServ
@@ -178,12 +175,11 @@ process e = case eNick e of
     Privmsg -> processPrivmsg e
     _       -> return ()
 
+-- | Call processCmd on the event, and send the output to IRC
 processPrivmsg :: Event -> BotSt ()
-processPrivmsg e = (mapM_ . sendMsg  $answ e) =<< (processCmd False s e)
+processPrivmsg e = (mapM_ . sendMsg $ answ e) =<< (processCmd False s e)
   where
     s = strip . rstrip . eMessage $ e
-
-
 
 ------------------------------
 -- Command processing stuff --
@@ -200,19 +196,17 @@ data Command = Command
                , job         :: Job
                }
 
--- Fancy operator (It's only for the beautiful notation)
+-- | Fancy operator (It's only for the beautiful notation)
 (~:) :: (a -> b) -> a -> b
 (~:) = ($)
 infixl 0 ~:
 
-ffmap :: (Functor f, Functor g) => (a -> b) ->f (g a) -> f (g b)
-ffmap = fmap . fmap
-
+-- | List of
 commandList :: [Command]
 commandList =
   [ Command ~: "!length"
             ~: Prefix
-            ~: \s e -> ffmap ~: show . length ~: processCmd True s e
+            ~: \s e -> fmap . fmap ~: show . length ~: processCmd True s e
   , Command ~: "!reverse"
             ~: Prefix
             ~: \s e -> fmap (map utf8Reverse) $ processCmd True s e
@@ -239,7 +233,7 @@ commandList =
             ~: \_ e -> liftIO $ fmap ((: []) . displayCalendar) $ toCalendarTime =<< getClockTime
   , Command ~: "!help"
             ~: Equal
-            ~: \_ e -> return . (: []) $ foldl (\s (Command n _ _) -> s </> n) "Je connais : " commandList
+            ~: help
 
   , Command ~: "php>"
             ~: Prefix
@@ -280,6 +274,7 @@ processCmd y s e = do
     selectOp Equal = (==)
     selectOp Suffix = isSuffixOf
 
+-- | What happen to all non interpreted string (returned if y == True)
 notInterpreted :: Bool -> String -> Event -> BotSt [String]
 notInterpreted y s e = do
   case eDest e of
@@ -289,6 +284,7 @@ notInterpreted y s e = do
              hirkLog "not_interpreted" s
              return []
 
+-- |  Apply the Command to the input, consuming prefix/suffix
 runHirkCommand :: Command -> String -> Event -> BotSt [String]
 runHirkCommand (Command cmd lw c) s e = case lw of
   Prefix -> c ~: drop (length cmd) s ~: e
@@ -314,10 +310,15 @@ uptime _ _ = do
 sendMsg :: String -> String -> BotSt ()
 sendMsg nick msg = write "PRIVMSG" (nick ++ " :" ++ msg)
 
+help :: Message -> Event -> BotSt [String]
+help s e = return . (: []) $ foldl f "Je connais : " commandList
+  where
+    f = (\s (Command n _ _) -> s <-/-> n)
 
 --- Usefull stuff
 (<:>) a b = a ++ ":" ++ b
 (</>) a b = a ++ "/" ++ b
+(<-/->) a b = a ++ "_/_" ++ b
 (<->) a b = a ++ " " ++ b
 
 strip :: String -> String
@@ -332,18 +333,17 @@ limit n s = if length s > n then
             else
               s
 
+concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
+concatMapM f = liftM concat . mapM f
+
 utf8Reverse :: String -> String
 utf8Reverse = B.unpack . T.encodeUtf8 . T.reverse . T.decodeUtf8 . B.pack
 
-(<.>) :: T.Text -> T.Text -> T.Text
-(<.>) = T.append
-
 displayTime :: TimeDiff -> String
-displayTime td = hour ++ " heures, " ++ min ++ " minuttes et " ++ sec ++ " secondes."
+displayTime td = formatTimeDiff  defaultTimeLocale format td'
   where
-    hour = show . tdHour $ td
-    sec = show . tdSec $ td
-    min = show . tdMin $ td
+    format = "%H heures, %M minuttes et %S secondes."
+    td' = normalizeTimeDiff td
 
 displayCalendar :: CalendarTime -> String
 displayCalendar ct = day </> month </> year <-> hour <:> min <:> sec
@@ -355,10 +355,12 @@ displayCalendar ct = day </> month </> year <-> hour <:> min <:> sec
     sec = show . ctSec $ ct
     min = show . ctMin $ ct
 
+-- | Select the good nickname / channel to answer to
 answ e = case eDest e of
   x | x == nick -> eNick e
   _             -> chan
 
+-- | Ask google for the 3 best results !!!
 google :: Event -> String -> BotSt [String]
 google e query = do
   (code, string) <- liftIO $ C.curlGetString
@@ -379,11 +381,10 @@ google e query = do
              ((arr concat <<< listA (deep getText)) &&& getAttrValue "href")
         format (a, b) = (show a) ++ " : " ++ (takeWhile ('&'/=) . drop (length "/url?q=") $ b)
 
-concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
-concatMapM f = liftM concat . mapM f
+---------------------------------------------
+-- Run interpretors for perl, php, lua.... --
+---------------------------------------------
 
-
--- Run things
 type Language = String
 type Interpretor = String
 runScript :: Language -> Interpretor -> String -> BotSt ([String])
@@ -407,8 +408,8 @@ runScript language interpretor scriptString = do
                   -> "PHP timed out..."
               _   -> stderr
   -- Log command
-  hirkLog ("run_" ++ language) $ foldl (\a b -> a ++ " " ++ b) cmd args
-  hirkLog ("run_" ++ language) $ (take 300 stdout) ++ (take 300 stderr)
+  hirkLog ("run_" ++ language) $ foldl (\a b -> a ++ " " ++ b) cmd args -- query
+  hirkLog ("run_" ++ language) $ (take 300 stdout) ++ (take 300 stderr) -- out/err
   -- Return output (limited to 3 lines)
   return $ take 3 . fmap (limit 100) $ output
 
@@ -430,7 +431,7 @@ runC = runScript "C" "/bin/picoc"
 runPython :: String -> BotSt ([String])
 runPython = runScript "Python" "/bin/python3"
 
--- Logs
+-- | Log the input onto the screen and into logFile
 hirkLog :: String -> String -> BotSt ()
 hirkLog name message = do
   liftIO $ appendFile logFile output

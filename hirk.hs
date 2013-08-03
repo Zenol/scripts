@@ -67,7 +67,7 @@ updateDance b
 server    = "irc.langochat.fr"
 port      = 6667
 chan      = "#gcn"
-nick      = "Hirk"
+nick      = "Hirk_Dev"
 chrootdir = "/home/zenol/hirk_chroot/"
 logFile   = "hirk.log"
 
@@ -179,79 +179,152 @@ process e = case eNick e of
     _       -> return ()
 
 processPrivmsg :: Event -> BotSt ()
-processPrivmsg e = (mapM_ (sendMsg (answ e))) =<< (processCmd False (eMessage e) e)
+processPrivmsg e = (mapM_ . sendMsg  $answ e) =<< (processCmd False s e)
+  where
+    s = strip . rstrip . eMessage $ e
 
--- y == true if it's a sub string of a command.
--- (used by !reverse to know we should return [s]
+
+
+------------------------------
+-- Command processing stuff --
+------------------------------
+type Message = String
+
+data LookingWay = Prefix | Infix | Suffix | Equal
+type CommandName = String
+type Job = Message -> Event -> BotSt [String]
+
+data Command = Command
+               { commandName :: CommandName
+               , lookingWay  :: LookingWay
+               , job         :: Job
+               }
+
+-- Fancy operator (It's only for the beautiful notation)
+(~:) :: (a -> b) -> a -> b
+(~:) = ($)
+infixl 0 ~:
+
+ffmap :: (Functor f, Functor g) => (a -> b) ->f (g a) -> f (g b)
+ffmap = fmap . fmap
+
+commandList :: [Command]
+commandList =
+  [ Command ~: "!length"
+            ~: Prefix
+            ~: \s e -> ffmap ~: show . length ~: processCmd True s e
+  , Command ~: "!reverse"
+            ~: Prefix
+            ~: \s e -> fmap (map utf8Reverse) $ processCmd True s e
+  , Command ~: "!google"
+            ~: Prefix
+            ~: \s e -> concatMapM (google e) =<< (processCmd True s e)
+  , Command ~: "!dance"
+            ~: Prefix
+            ~: \_ _ -> gets dance >>= (\x -> modify updateDance >> return [x])
+  , Command ~: "!uptime"
+            ~: Equal
+            ~: uptime
+  , Command ~: "!uptime"
+            ~: Infix
+            ~: \_ _ -> return ["Tulas à vous"]
+  , Command ~: "!bestwebsite"
+            ~: Equal
+            ~: \_ _ -> return ["http://zenol.fr biensur!"]
+  , Command ~:  "!quit"
+            ~: Equal
+            ~: \s e -> if (eNick e) == "Zenol" then quit "Snif ..." s e else return []
+  , Command ~: "!time"
+            ~: Equal
+            ~: \_ e -> liftIO $ fmap ((: []) . displayCalendar) $ toCalendarTime =<< getClockTime
+  , Command ~: "!help"
+            ~: Equal
+            ~: \_ e -> return . (: []) $ foldl (\s (Command n _ _) -> s </> n) "Je connais : " commandList
+
+  , Command ~: "php>"
+            ~: Prefix
+            ~: \s _ -> runPhp s
+  , Command ~: "lua>"
+            ~: Prefix
+            ~: \s _ -> runLua s
+  , Command ~: "python>"
+            ~: Prefix
+            ~: \s _ -> runPython s
+  , Command ~: "perl>"
+            ~: Prefix
+            ~: \s _ -> runPerl s
+  , Command ~: "ruby>"
+            ~: Prefix
+            ~: \s _ -> runRuby s
+  , Command ~: "c>"
+            ~: Prefix
+            ~: \s _ -> runC s
+
+  , Command ~: (nick ++ "> Part loin et ne reviens jamais!")
+            ~: Equal
+            ~: quit "Je vais me cacher..."
+  ]
+
+-- Process a command with the consumed input s, the event e, and
+-- y == True if the untreated substring should be returned as output.
 processCmd :: Bool -> String -> Event -> BotSt [String]
-processCmd y s e
-  | s == nick ++ "> Part loin et ne reviens jamais!" = do
-    write "QUIT" ":\"Je vais me cacher...\""
-    liftIO $ exitWith ExitSuccess
-    return []
-processCmd y s e
-  | "!length " `isPrefixOf` s = do
-    return [show . length . drop 8 $ s]
-processCmd y s e
-  | "!google " `isPrefixOf` s = do
-    concatMapM (google e) =<< (processCmd True (drop (length "!google ") s) e)
-processCmd y s e
-  | "php>" `isPrefixOf` s = do
-    runPhp (drop (length "php>") s)
-processCmd y s e
-  | "lua>" `isPrefixOf` s = do
-    runLua (drop (length "lua>") s)
-processCmd y s e
-  | "python>" `isPrefixOf` s = do
-    runPython (drop (length "python>") s)
-processCmd y s e
-  | "perl>" `isPrefixOf` s = do
-    runPerl (drop (length "perl>") s)
-processCmd y s e
-  | "ruby>" `isPrefixOf` s = do
-    runRuby (drop (length "ruby>") s)
-processCmd y s e
-  | "c>" `isPrefixOf` s = do
-    runC (drop (length "c>") s)
-processCmd y "!dance" e = do
-    string <- gets dance
-    modify updateDance
-    return [string]
-processCmd y "!help" e = do
-  return ["Je connais !dance, !uptime, !time, !reverse, !google, !bestwebsite et !quit.",
-          "Je peux aussi interpréter du php/perl avec 'php> echo \"hello\";'."]
-processCmd y "!uptime" e = do
+processCmd y s e = do
+  case take 1 . filter selectCommand $ commandList of
+    []    -> notInterpreted y s' e
+    a : _ -> runHirkCommand a s' e
+  where
+    s' = strip s
+    selectCommand (Command name op _) = selectOp op ~: name ~: s'
+    selectOp Prefix = isPrefixOf
+    selectOp Infix = isInfixOf
+    selectOp Equal = (==)
+    selectOp Suffix = isSuffixOf
+
+notInterpreted :: Bool -> String -> Event -> BotSt [String]
+notInterpreted y s e = do
+  case eDest e of
+    x | x == nick && y == False
+        -> return ["Je ne suis pas complètement implémenté :("]
+    _   -> if y then return [s] else do
+             hirkLog "not_interpreted" s
+             return []
+
+runHirkCommand :: Command -> String -> Event -> BotSt [String]
+runHirkCommand (Command cmd lw c) s e = case lw of
+  Prefix -> c ~: drop (length cmd) s ~: e
+  Suffix -> c (reverse . drop (length cmd) . reverse $ s) e
+  _      -> c s e
+
+--
+-- Command functions
+--
+
+quit :: String -> Message -> Event -> BotSt [String]
+quit quitMsg _ _ = do
+  write "QUIT" (":\"" ++ quitMsg ++ "\"")
+  liftIO $ exitWith ExitSuccess
+  return []
+
+uptime :: Message -> Event -> BotSt [String]
+uptime _ _ = do
   now <- liftIO $ getClockTime
   start <- gets startTime
   return [displayTime $ diffClockTimes now start]
-processCmd y s e
-  | "tulas" `isInfixOf` s = do
-    return ["Tulas à vous!"]
-processCmd y "!time" e = do
-  now <- liftIO $ toCalendarTime =<< getClockTime
-  return [displayCalendar now]
-processCmd y "!bestwebsite" e = do
-  return ["http://zenol.fr biensur!"]
-processCmd y "!quit" e
-  | (eNick e) == "Zenol" = do
-    write "QUIT" ":\"Snif ...\""
-    liftIO $ exitWith ExitSuccess
-processCmd y s e
-  | "!reverse " `isPrefixOf` s = do
-    fmap (map utf8Reverse) $ processCmd True (drop 9 $ s) e
-processCmd y s e = case eDest e of
-    x | x == nick && y == False
-                  -> return ["Je ne suis pas complètement implémenté :("]
-    _             -> if y then return [s] else do
-      hirkLog "not_interpreted" s
-      return []
 
 sendMsg :: String -> String -> BotSt ()
 sendMsg nick msg = write "PRIVMSG" (nick ++ " :" ++ msg)
 
 
 --- Usefull stuff
-rstrip = reverse . dropWhile isSpace . reverse
+(<:>) a b = a ++ ":" ++ b
+(</>) a b = a ++ "/" ++ b
+(<->) a b = a ++ " " ++ b
+
+strip :: String -> String
+strip = dropWhile isSpace
+
+rstrip :: String -> String
+rstrip = reverse . strip . reverse
 
 limit :: Int -> String -> String
 limit n s = if length s > n then
@@ -275,9 +348,6 @@ displayTime td = hour ++ " heures, " ++ min ++ " minuttes et " ++ sec ++ " secon
 displayCalendar :: CalendarTime -> String
 displayCalendar ct = day </> month </> year <-> hour <:> min <:> sec
   where
-    (<:>) a b = a ++ ":" ++ b
-    (</>) a b = a ++ "/" ++ b
-    (<->) a b = a ++ " " ++ b
     day = show . ctDay $ ct
     month = show . fromEnum . ctMonth $ ct
     year = show . ctYear $ ct
@@ -324,7 +394,6 @@ runScript language interpretor scriptString = do
               "safe_chroot", chrootdir,
               "timeout", "-sSIGKILL", "1.1",
               "env", "LANG=C",
-              "env", "PYTHONHOME=/room/"
               interpretor
              ]
   let input = scriptString

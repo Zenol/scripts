@@ -14,6 +14,8 @@
 
 import           System.Environment
 import           Control.Monad
+import           Data.Maybe
+import           Debug.Trace
 
 import           Text.LaTeX.Base.Syntax
 import           Text.LaTeX.Base.Parser
@@ -46,17 +48,86 @@ import           Text.Groom
 -------------------------------------
 
 buildDvpHeader :: [Sugar] -> Element
-buildDvpHeader s = unode "test" "hello"
+buildDvpHeader s =
+  unode "entete"
+  [
+    unode "titre"
+    [
+       unode "page" titleValue,
+       unode "article" titleValue
+    ],
+    unode "auteur" authorValue
+  ]
+  where
+    titleValue = fromMaybe "" $ getTitle s
+    authorValue = fromMaybe "" $ getAuthor s
+
+-- | List of the latex commands to keep (the one that would be treated)
+goodCommands :: [String]
+goodCommands = [ "caption"
+               , "includegraphics"
+               , "item"
+               , "section"
+               , "subsection"
+               , "subsubsection"
+               , "emph"
+               , "footnote"
+               , "ref"
+               , "lslisting"]
+
+-- | Replace emph and ref by Xml nodes
+dvpEmphRef :: Sugar -> Sugar
+dvpEmphRef (SCommand "emph" [FixArg v]) = sxmlElem [unode "i" (renderLatex v)]
+dvpEmphRef (SCommand "ref" [FixArg v])  = sxmlElem [unode "b" $ "ref:" ++ (renderLatex v)]
+dvpEmphRef x = x
+
+-- | Replace SMath node by SXml nodes
+dvpMath :: Sugar -> Sugar
+dvpMath (SMath _ s) = sxmlElem [unode "latex" s]
+dvpMath x = x
+
+dvpText :: Sugar -> Sugar
+dvpText (SText s) = sxmlElem [node blank_name s]
+dvpText x = x
+
+concatXml :: [Sugar] -> [Sugar]
+concatXml = sugarMapL' reduce
+  where
+    reduce (SXml a : SXml b : xs) = SXml (a ++ b) : reduce xs
+    reduce (x : xs) = x : reduce xs
+    reduce [] = []
+
+buildDvpCore :: [Sugar] -> [Element]
+buildDvpCore =  buildDvpCoreAux
+                . concatXml
+                . up (dvpMath . dvpEmphRef . dvpText)
+  where
+    up f = fmap (sugarMap f)
+
+buildDvpCoreAux :: [Sugar] -> [Element]
+buildDvpCoreAux (l : xs) = case l of
+  SXml x -> unode "paragraph" x : continue
+  _      -> unode "YURK" "" : continue
+  where
+    continue = buildDvpCoreAux xs
+buildDvpCoreAux [] = []
+
+
+renderDvp :: [Element] -> String
+renderDvp = (xmlHeader ++) . display . unode "document"
+  where
+    display = ppcElement (useExtraWhiteSpace True prettyConfigPP)
+    xmlHeader = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n"
 
 -- | True 'entry point' of the script
 workOnLatex :: LaTeX -> IO ()
 workOnLatex topLevel = do
-  putStrLn . ("Author: "++) . show . getAuthor $ sugar
-  putStrLn . ("Title: "++)  . show . getTitle  $ sugar
-  putStrLn . ppTopElement $ buildDvpHeader sugar
-  putStrLn . groom $ cleanSugar sugar
-  putStrLn . groom $ getDocument sugar
+  putStrLn . renderDvp $ [dvpHeader] ++ dvpCore
+--putStrLn . groom $ getDocument sugar
+--putStrLn . groom $ cleanSugar sugar
   where
+    dvpHeader = buildDvpHeader sugar
+    dvpCore   = buildDvpCore . fromMaybe [] $ getDocument sugar
     sugar = sugarMachine topLevel
 
 -- Read stdin as a tex file
@@ -76,7 +147,7 @@ main = do
 
 -- | Produce a latex output from a LaTeX AST.
 renderLatex :: LaTeX -> String
-renderLatex = T.unpack . renderAppend . (: [])
+renderLatex = trace "renderText" $ T.unpack . renderAppend . (: [])
 
 -- | Get the LaTeX nodes from a TeXArg
 extract :: TeXArg -> [LaTeX]
@@ -106,9 +177,19 @@ data Sugar =
   | SMath MathType String
   | SLineSep
   | SComment String
+    -- Xml node, used when reducing the sugar into xml :)
+  | SXml [Content]
     -- Debug purpose, ignored.
   | SStrange LaTeX
+    --
     deriving (Show, Eq)
+
+-- Bad style :
+instance Eq Content where
+  (==) _ _ = False
+
+sxmlElem :: [Element] -> Sugar
+sxmlElem = SXml . fmap Elem
 
 -- | Apply f on each node.
 sugarMap :: (Sugar -> Sugar) -> Sugar -> Sugar
@@ -116,7 +197,7 @@ sugarMap f (SEnv s a v) = f $ SEnv s a (fmap (sugarMap f) v)
 sugarMap f s = f $ s
 
 sugarMapL :: ([Sugar] -> [Sugar]) -> Sugar -> Sugar
-sugarMapL f (SEnv s a v) = SEnv s a (fmap (sugarMapL f) v)
+sugarMapL f (SEnv s a v) = SEnv s a (f $ fmap (sugarMapL f) v)
 sugarMapL _ s = s
 
 sugarMapL' :: ([Sugar] -> [Sugar]) -> [Sugar] -> [Sugar]
@@ -125,11 +206,17 @@ sugarMapL' f l = f $ fmap (sugarMapL f) l
 isLineSep :: String -> Bool
 isLineSep = null . dropWhile isSpace
 
+filterQuote :: String -> String
+filterQuote ('\'' : '\'' : xs) = '"' : filterQuote xs
+filterQuote ('`'  : '`'  : xs) = '"' : filterQuote xs
+filterQuote (x : xs) = x : filterQuote xs
+filterQuote [] = []
+
 -- | Return a SText or a SLineSep depending on the string given
 sugarize :: String -> [Sugar]
 sugarize s = case isLineSep s of
   True -> [SLineSep]
-  False -> [SText . strip . rstrip $ s]
+  False -> [SText . filterQuote . strip . rstrip $ s]
 
 -- | Go deap in the tree and clean each Env node encountered
 --   (Nb : It skip any LaTeX node in TeXArgs.)
@@ -167,8 +254,29 @@ reduceLineSepTop [] = []
 reduceLineSep :: [Sugar] -> [Sugar]
 reduceLineSep = sugarMapL' reduceLineSepTop
 
+trimLineSepTop :: [Sugar] -> [Sugar]
+trimLineSepTop = reverse . trim . reverse . trim
+  where
+    trim = dropWhile (SLineSep ==)
+
+trimLineSep :: [Sugar] -> [Sugar]
+trimLineSep = sugarMapL' trimLineSepTop
+
 cleanSugar :: [Sugar] -> [Sugar]
-cleanSugar = reduceLineSep . stripComments . stripMedskip
+cleanSugar = trimLineSep . reduceLineSep . stripComments . stripMedskip
+
+-- | Keep only the command named in the string list
+keepOnly :: [String] -> [Sugar] -> [Sugar]
+keepOnly l (x:xs) = case x of
+  SEnv s a sugar -> SEnv s a (keepOnly l sugar) : tail
+  SCommand name args
+    | name `elem` l -> x : tail
+    | otherwise     -> tail
+  _              -> x : tail
+  where
+    tail = keepOnly l xs
+keepOnly _ [] = []
+
 --------------------
 -- Sugar commands --
 --------------------
@@ -190,7 +298,7 @@ getAuthor [] = Nothing
 -- | Find the node 'document' and return a clean list of LaTeX nodes
 getDocument :: [Sugar] -> Maybe [Sugar]
 getDocument (x : xs) = case x of
-  SEnv "document" _ l -> Just l
+  SEnv "document" _ l -> Just . cleanSugar . keepOnly goodCommands $ l
   _                   -> getDocument xs
 getDocument [] = Nothing
 

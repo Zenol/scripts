@@ -22,6 +22,7 @@
 import           System.Environment
 import           Control.Monad
 import           Data.Maybe
+import           Data.List
 
 import           Text.LaTeX.Base.Syntax
 import           Text.LaTeX.Base.Parser
@@ -41,13 +42,16 @@ import           Text.XML.Light
 import           Text.Groom
 
 
--- Nb : The dvp xml format don't allow UTF8.
--- Due to that, and the fact that HaTex _need_ UTF8 strings,
--- I'm expecting to read latin-1, and produce latin-1,
--- though some "ugly" cheats. Once UTF8 will be supported in
--- dvp format, I'll be able to remove that. Until this time,
--- you'll have to stick to latin-1 output and modify this file
--- for utf8-input. (See utf8 comment below)
+-- Nb : The dvp xml format don't allow UTF8,
+-- but this script output uptf8 (due to the fact that
+-- HaTeX accept only Text string and Text does not
+-- provide utf8->latin conversion.
+-- The script expect to read latin-1.
+-- Once UTF8 will be supported in
+-- dvp format, it'll be better. Until this time,
+-- you'll have to convert your utf8 output into latin1 and
+-- modify the xml header by adding 'encoding="ISO-8859-1"'.
+-- For utf8 input, see utf8 comment below.
 
 -------------------------------------
 -- Convert the input to dvp format --
@@ -113,26 +117,59 @@ buildDvpSummary l = (: []) . unode "synopsis" $ buildDvpSummaryAux l
         continue = buildDvpSummaryAux xs
     buildDvpSummary [] = []
 
+cutOnItem :: [Sugar] -> [[Sugar]]
+cutOnItem = groupBy (\a b -> (not . isItem) a && (not . isItem) b)
+  where
+    isItem (SCommand "item" _) = True
+    isItem _ = False
+
+simplifySugar :: [Sugar] -> [Sugar]
+simplifySugar = concatXml
+                . fmap dvpMath . zip (fmap show [1..])
+                . up (dvpEmphRef . dvpText)
+  where
+    up f = fmap (sugarMap f)
+
 buildDvpCore :: [Sugar] -> [Element]
 buildDvpCore (l : xs) = case l of
-  SXml x  -> unode "paragraph" x : continue
+  SXml x  -> od $ unode "paragraph" x
   SCommand "footnote" [FixArg l]
-          -> unode "imgtext" (quickArg "type" "info", renderLatex l) : continue
+          -> od $ unode "imgtext" (quickArg "type" "info", renderLatex l)
   SCommand "lstinline" _
-          -> unode "lstinline" "" : continue
+          -> od $ unode "lstinline" ""
   SCommand "section" args
-          -> section "section_begin" args : continue
+          -> od $ section "section-begin" args
   SCommand "subsection" args
-          -> section "subsection_begin" args : continue
+          -> od $ section "subsection-begin" args
   SCommand "subsubsection" args
-          -> section "subsubsection_begin" args : continue
+          -> od $ section "subsubsection-begin" args
+  SEnv "itemize" _ xs
+          -> od $ unode "liste" $ fmap (unode "element") . listOfNode $ xs
+  SEnv "lstlisting" _ xs
+          -> od $ unode "missing-code" $ sugarToElem . simplifySugar $ xs
+  SEnv "figure" _ xs
+          -> od $ unode "missing-figure" $ sugarToText . simplifySugar $ xs
   -- Now, they should be LineSep only beetween to paragraph, so just
   -- drop them.
   SLineSep -> continue
-  n       -> unode "YURK" (show n) : continue
+  SEnv "abstract" _ _ -> continue
+  n       -> od $ unode "???" $ CData CDataVerbatim (show n) Nothing
   where
+    od a = a : continue
     continue = buildDvpCore xs
+    listOfNode :: [Sugar] -> [[Content]]
+    listOfNode =  fmap sugarToElem . fmap simplifySugar . nonItem . cutOnItem
+    nonItem :: [[Sugar]] -> [[Sugar]]
+    nonItem ([SCommand "item" _] : xs) = nonItem xs
+    nonItem (x : xs) = x : nonItem xs
+    nonItem [] = []
     section n a = (unode n . concat . fmap texArgToString $ a)
+    sugarToText :: [Sugar] -> [Content]
+    sugarToText = fmap (\v -> Text $ CData CDataVerbatim (show v) Nothing)
+    sugarToElem :: [Sugar] -> [Content]
+    sugarToElem ((SXml x) : xs) = x ++ (sugarToElem xs)
+    sugarToElem (x:xs) = sugarToElem xs
+    sugarToElem [] = []
 buildDvpCore [] = []
 
 
@@ -140,7 +177,7 @@ renderDvp :: [Element] -> String
 renderDvp = (xmlHeader ++) . display . unode "document"
   where
     display = ppcElement (useExtraWhiteSpace True prettyConfigPP)
-    xmlHeader = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n"
+    xmlHeader = "<?xml version=\"1.0\"?>\n"
 
 -- | True 'entry point' of the script
 workOnLatex :: LaTeX -> IO ()
@@ -151,13 +188,9 @@ workOnLatex topLevel = do
   where
     dvpHeader = buildDvpHeader sugar
     dvpSummary = buildDvpSummary cleanSugar
-    dvpCore   = buildDvpCore cleanSugar
+    dvpCore   = [unode "summary" $ buildDvpCore cleanSugar]
     sugar = sugarMachine topLevel
-    cleanSugar = concatXml
-                . fmap dvpMath . zip (fmap show [1..])
-                . up (dvpEmphRef . dvpText)
-                . fromMaybe [] $ getDocument sugar
-    up f = fmap (sugarMap f)
+    cleanSugar = simplifySugar . fromMaybe [] $ getDocument sugar
 
 -- Read stdin as a tex file
 -- Write stdout as a dvp xml file

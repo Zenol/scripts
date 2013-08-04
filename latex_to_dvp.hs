@@ -1,5 +1,17 @@
 #!/usr/bin/runhaskell
 
+--
+-- Hi reader. This is a short scripts that translate latex input into
+-- developpez.com xml format.
+--
+-- Maybe you don't know latex, maybe you are afraid of all those
+-- strange symbols. But don't run away,  you can still modify a bit the
+-- script to make it behave as you like. Just read the comments, find
+-- the part you wan't to modify, and immite the style you'll read.
+-- The compiler (if you use ghc) won't let you make something that won't work,
+-- and will help you to correct the errors with meaningfull errors.
+--
+
 import           System.Environment
 import           Control.Monad
 
@@ -19,6 +31,15 @@ import           Text.XML.Light
 
 -- Debug (pretty display of data)
 import           Text.Groom
+
+
+-- Nb : The dvp xml format don't allow UTF8.
+-- Due to that, and the fact that HaTex _need_ UTF8 strings,
+-- I'm expecting to read latin-1, and produce latin-1,
+-- though some "ugly" cheats. Once UTF8 will be supported in
+-- dvp format, I'll be able to remove that. Until this time,
+-- you'll have to stick to latin-1 output and modify this file
+-- for utf8-input. (See utf8 comment below)
 
 -------------------------------------
 -- Convert the input to dvp format --
@@ -43,11 +64,11 @@ workOnLatex topLevel = do
 main :: IO ()
 main = do
   -- If your input is utf8, replace 'T.decodeLatin1' by 'T.decodeUtf8'
-  v <- fmap (latexAtOnce . T.decodeLatin1) B.getContents
+  latexOrError <- fmap (latexAtOnce . T.decodeLatin1) B.getContents
 
-  case v of
-    Left  s -> putStrLn $ "error: " ++ s
-    Right l -> workOnLatex l
+  case latexOrError of
+    Left  error -> putStrLn $ "error: " ++ error
+    Right latex -> workOnLatex latex
 
 -------------------------
 -- Work on LaTeX stuff --
@@ -69,12 +90,13 @@ extract (MSymArg ls) = ls
 texArgToString :: TeXArg -> String
 texArgToString = concat . map renderLatex . extract
 
-
 ---------------------------------------------------------------
 -- Descript Sugar stuff and convert LaTeX AST into Sugar AST --
 ---------------------------------------------------------------
 
--- Why sugar? Because the 'latex' world is already used by HaTeX.
+-- What is sugar? It's a memory representation of the input
+-- suitable to be transformed in xml.
+-- Why sugar? Because the 'latex' world is already used by HaTeX...
 
 -- | This is a new clean representation of the tex AST
 data Sugar =

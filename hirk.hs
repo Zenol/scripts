@@ -318,7 +318,7 @@ help s e = return . (: []) $ foldl f "Je connais : " commandList
 --- Usefull stuff
 (<:>) a b = a ++ ":" ++ b
 (</>) a b = a ++ "/" ++ b
-(<-/->) a b = a ++ "_/_" ++ b
+(<-/->) a b = a ++ " / " ++ b
 (<->) a b = a ++ " " ++ b
 
 strip :: String -> String

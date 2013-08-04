@@ -12,10 +12,16 @@
 -- and will help you to correct the errors with meaningfull errors.
 --
 
+--
+-- These do not make the cofee, sorry. You'll have to correct some peaces like
+-- footnote (introduced in middle of paragraph, because the script can't easily know
+-- where put the footnote).
+-- Same thing for lstinline wich isn't parsed by HaTex
+--
+
 import           System.Environment
 import           Control.Monad
 import           Data.Maybe
-import           Debug.Trace
 
 import           Text.LaTeX.Base.Syntax
 import           Text.LaTeX.Base.Parser
@@ -73,7 +79,7 @@ goodCommands = [ "caption"
                , "emph"
                , "footnote"
                , "ref"
-               , "lslisting"]
+               , "lstinline"]
 
 -- | Replace emph and ref by Xml nodes
 dvpEmphRef :: Sugar -> Sugar
@@ -82,35 +88,52 @@ dvpEmphRef (SCommand "ref" [FixArg v])  = sxmlElem [unode "b" $ "ref:" ++ (rende
 dvpEmphRef x = x
 
 -- | Replace SMath node by SXml nodes
-dvpMath :: Sugar -> Sugar
-dvpMath (SMath _ s) = sxmlElem [unode "latex" s]
-dvpMath x = x
+dvpMath :: (String, Sugar) -> Sugar
+dvpMath (n, SMath _ s) = sxmlElem [unode "latex" $ (Attr (unqual "id") n, s)]
+dvpMath (_, x) = x
 
 dvpText :: Sugar -> Sugar
-dvpText (SText s) = sxmlElem [node blank_name s]
+dvpText (SText s) = SXml [Text . CData CDataText s $ Nothing]
 dvpText x = x
 
 concatXml :: [Sugar] -> [Sugar]
 concatXml = sugarMapL' reduce
   where
-    reduce (SXml a : SXml b : xs) = SXml (a ++ b) : reduce xs
+    reduce (SXml a : SXml b : xs) = reduce $ SXml (a ++ b) :  xs
     reduce (x : xs) = x : reduce xs
     reduce [] = []
 
-buildDvpCore :: [Sugar] -> [Element]
-buildDvpCore =  buildDvpCoreAux
-                . concatXml
-                . up (dvpMath . dvpEmphRef . dvpText)
+buildDvpSummary :: [Sugar] -> [Element]
+buildDvpSummary l = (: []) . unode "synopsis" $ buildDvpSummaryAux l
   where
-    up f = fmap (sugarMap f)
+    buildDvpSummaryAux (l : xs) = case l of
+      SEnv "abstract" args ls -> buildDvpCore ls
+      _                       -> continue
+      where
+        continue = buildDvpSummaryAux xs
+    buildDvpSummary [] = []
 
-buildDvpCoreAux :: [Sugar] -> [Element]
-buildDvpCoreAux (l : xs) = case l of
-  SXml x -> unode "paragraph" x : continue
-  _      -> unode "YURK" "" : continue
+buildDvpCore :: [Sugar] -> [Element]
+buildDvpCore (l : xs) = case l of
+  SXml x  -> unode "paragraph" x : continue
+  SCommand "footnote" [FixArg l]
+          -> unode "imgtext" (quickArg "type" "info", renderLatex l) : continue
+  SCommand "lstinline" _
+          -> unode "lstinline" "" : continue
+  SCommand "section" args
+          -> section "section_begin" args : continue
+  SCommand "subsection" args
+          -> section "subsection_begin" args : continue
+  SCommand "subsubsection" args
+          -> section "subsubsection_begin" args : continue
+  -- Now, they should be LineSep only beetween to paragraph, so just
+  -- drop them.
+  SLineSep -> continue
+  n       -> unode "YURK" (show n) : continue
   where
-    continue = buildDvpCoreAux xs
-buildDvpCoreAux [] = []
+    continue = buildDvpCore xs
+    section n a = (unode n . concat . fmap texArgToString $ a)
+buildDvpCore [] = []
 
 
 renderDvp :: [Element] -> String
@@ -122,13 +145,19 @@ renderDvp = (xmlHeader ++) . display . unode "document"
 -- | True 'entry point' of the script
 workOnLatex :: LaTeX -> IO ()
 workOnLatex topLevel = do
-  putStrLn . renderDvp $ [dvpHeader] ++ dvpCore
+  putStrLn . renderDvp $ [dvpHeader] ++ dvpSummary ++ dvpCore
 --putStrLn . groom $ getDocument sugar
 --putStrLn . groom $ cleanSugar sugar
   where
     dvpHeader = buildDvpHeader sugar
-    dvpCore   = buildDvpCore . fromMaybe [] $ getDocument sugar
+    dvpSummary = buildDvpSummary cleanSugar
+    dvpCore   = buildDvpCore cleanSugar
     sugar = sugarMachine topLevel
+    cleanSugar = concatXml
+                . fmap dvpMath . zip (fmap show [1..])
+                . up (dvpEmphRef . dvpText)
+                . fromMaybe [] $ getDocument sugar
+    up f = fmap (sugarMap f)
 
 -- Read stdin as a tex file
 -- Write stdout as a dvp xml file
@@ -147,7 +176,7 @@ main = do
 
 -- | Produce a latex output from a LaTeX AST.
 renderLatex :: LaTeX -> String
-renderLatex = trace "renderText" $ T.unpack . renderAppend . (: [])
+renderLatex = T.unpack . renderAppend . (: [])
 
 -- | Get the LaTeX nodes from a TeXArg
 extract :: TeXArg -> [LaTeX]
@@ -156,10 +185,19 @@ extract (FixArg l)   = [l]
 extract (MOptArg ls) = ls
 extract (SymArg l)   = [l]
 extract (MSymArg ls) = ls
-
 -- | Convert a Single TeXArg node into a human readable string
 texArgToString :: TeXArg -> String
-texArgToString = concat . map renderLatex . extract
+texArgToString = concat . map renderLatex. filter (not . isCom) . lin . extract
+  where
+    isCom (TeXComment _) = True
+    isCom (TeXCommS _) = True
+    isCom (TeXComm _ _) = True
+    isCom _ = False
+    lin :: [LaTeX] -> [LaTeX]
+    lin (TeXSeq l r : xs) = (lin [l]) ++ (lin [r]) ++ (lin xs)
+    lin (x  : xs) = x : lin xs
+    lin [] = []
+
 
 ---------------------------------------------------------------
 -- Descript Sugar stuff and convert LaTeX AST into Sugar AST --
@@ -314,3 +352,5 @@ strip = dropWhile isSpace
 rstrip :: String -> String
 rstrip = reverse . dropWhile isSpace . reverse
 
+quickArg :: String -> String -> Attr
+quickArg n v = (Attr (unqual n) v)

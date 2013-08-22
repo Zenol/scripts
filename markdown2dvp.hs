@@ -72,10 +72,13 @@ data WriterState = WriterState { stNotes :: Notes
                                , stRefs  :: Refs
                                , stIds   :: [String]
                                , stPlain :: Bool
-                               , stLatex :: Int}
+                               , stLatex :: Int
+                               , stLogs  :: [String]}
 instance Default WriterState
   where def = WriterState{ stNotes = [], stRefs = [], stIds = [],
                            stPlain = False, stLatex = 0 }
+incrementLatex :: State WriterState ()
+incrementLatex = modify (\s -> s {stLatex = 1 + stLatex s})
 
 (<>) :: Node t => String -> t -> Element
 (<>) = unode
@@ -121,8 +124,10 @@ frenchQuoteToEnglish []               = []
 -- Writer
 
 -- | Convert pandoc document to a DVP xml string
-writeDvp :: WriterOptions -> Pandoc -> DVP
-writeDvp opts document = evalState (pandocToDvp opts document) def
+writeDvp :: WriterOptions -> Pandoc -> (DVP, [String])
+writeDvp opts document = extract $ runState (pandocToDvp opts document) def
+  where
+    extract (a, b) = (a, stLogs b)
 
 -- | Take a XML tree and output a string containing xml header
 renderDvp :: XML -> DVP
@@ -163,7 +168,22 @@ inlineToXML _ (Code _ str) = return . toXML $ "inline" <> str
 inlineToXML _ (Str str) = return $ toXML str
 inlineToXML _ (Space) = return $ toXML " "
 -- Inline latex
-inlineToXML (Math InlineMath str) = do
+inlineToXML w (Math InlineMath str) = do
+  id <- fmap (("latex-" ++) . show) $ gets stLatex
+  incrementLatex
+  return . toXML $ "latex" <> ["id" |= id] |. (verbaText str)
+-- Raw stuff isn't supported
+inlineToXML w (RawInline f str) = do
+  modify (\s -> s { stLogs = msg : stLogs s })
+  return . toXML $ str
+  where
+    msg = "RawInline not supported : " ++ f ++ " - " ++ str
+inlineToXML w c@(Cite _ is) = do
+  modify (\s -> s { stLogs = msg : stLogs s })
+  warp w is id
+  where
+    msg = "Citation not supported : " ++ (show c)
+
 
 inlineToXML _ x = return . toXML . show $ x
 
@@ -173,12 +193,13 @@ authorToXML = inlineListToXML
 pandocToDvp :: WriterOptions -> Pandoc -> State WriterState DVP
 pandocToDvp opts (Pandoc (Meta title authors date) blocks) = do
   title' <- fmap ("titre" <>) $ inlineListToXML opts title
+  page' <- fmap ("titre" <>) $ inlineListToXML opts title
   authors' <- fmap concat . mapM (authorToXML opts) $ authors
   date' <- inlineListToXML opts date
   headerblock <- return . Elem $ "entete" <>
       [ "rubrique"  <> "89"
       , "meta"      <> ["description" <> "", "keywords" <> ""]
-      , "titre"     <> ["page" <> title', "article" <> title']
+      , "titre"     <> ["page" <> page', "article" <> title']
       , "date"      <> date'
       , "miseajour" <> date'
       , "extratag"  <> emptyXML
@@ -201,7 +222,7 @@ pandocToDvp opts (Pandoc (Meta title authors date) blocks) = do
    whit them -}
 
 main :: IO ()
-main = interact (dvpToString . writeDvp def . readMarkdown readerOpts)
+main = interact (dvpToString . fst . writeDvp def . readMarkdown readerOpts)
 
 readerOpts = def
     { readerSmart = True

@@ -36,6 +36,8 @@ import           Data.Default (Default(..))
 import           Control.Monad.State
 import           Data.Maybe
 import           Data.Set
+-- App
+import           System.IO
 -- Pandoc
 import           Text.Pandoc
 import           Text.Pandoc.Shared (escapeStringUsing)
@@ -47,6 +49,7 @@ import           Text.XML.Light (unode,
                                  Content(..),
                                  Element(..),
                                  ppcElement,
+                                 showContent,
                                  Node,
                                  useExtraWhiteSpace,
                                  prettyConfigPP)
@@ -76,7 +79,7 @@ data WriterState = WriterState { stNotes :: Notes
                                , stLogs  :: [String]}
 instance Default WriterState
   where def = WriterState{ stNotes = [], stRefs = [], stIds = [],
-                           stPlain = False, stLatex = 0 }
+                           stPlain = False, stLatex = 0, stLogs = [] }
 incrementLatex :: State WriterState ()
 incrementLatex = modify (\s -> s {stLatex = 1 + stLatex s})
 
@@ -148,6 +151,9 @@ warp w is f = do
   content <- inlineListToXML w is
   return . toXML $ f content
 
+blockToXML :: WriterOptions -> Block -> State WriterState XML
+blockToXML w bs = return emptyXML
+
 inlineToXML w (Emph is) = warp w is $ \content ->
   "i" <> content
 inlineToXML w (Strong is) = warp w is $ \content ->
@@ -169,6 +175,7 @@ inlineToXML _ (Str str) = return $ toXML str
 inlineToXML _ (Space) = return $ toXML " "
 -- Inline latex
 inlineToXML w (Math InlineMath str) = do
+  modify (\s -> s { stLogs = ["plouf"] })
   id <- fmap (("latex-" ++) . show) $ gets stLatex
   incrementLatex
   return . toXML $ "latex" <> ["id" |= id] |. (verbaText str)
@@ -183,7 +190,21 @@ inlineToXML w c@(Cite _ is) = do
   warp w is id
   where
     msg = "Citation not supported : " ++ (show c)
-
+inlineToXML w (Link is (url, "")) = warp w is $ \content ->
+  "link" <> ["href" |= url] |. content
+inlineToXML w (Link is (url, title)) = warp w is $ \content ->
+  "link" <> ["href" |= url, "title" |= title] |. content
+inlineToXML w (Image is (url, title)) = warp w is $ \content ->
+  let alt = concat $ fmap showContent content in
+  "image" <> ["href" |= url, "title" |= title, "alt" |= alt] |. emptyXML
+inlineToXML w (Note bs) = case isEnabled Ext_footnotes w of
+    True -> do
+      modify (\st -> st{ stNotes = bs : stNotes st })
+      ref <- (show . length) `fmap` gets stNotes
+      return . concat . fmap toXML $ ["[", ref, "]"]
+    False -> do
+      content <- fmap concat . mapM (blockToXML w) $ bs
+      return . concat $ [toXML "[", content , toXML "]"]
 
 inlineToXML _ x = return . toXML . show $ x
 
@@ -222,7 +243,13 @@ pandocToDvp opts (Pandoc (Meta title authors date) blocks) = do
    whit them -}
 
 main :: IO ()
-main = interact (dvpToString . fst . writeDvp def . readMarkdown readerOpts)
+main = do
+  s <- getContents
+  o <- return . writeDvp (def) . readMarkdown readerOpts $ s
+  mapM_ (hPutStrLn stderr) $ snd o
+  putStrLn . dvpToString $ fst o
+
+writerNoFootnote s = s { writerExtensions = writerExtensions s \\ Data.Set.fromList [Ext_footnotes]}
 
 readerOpts = def
     { readerSmart = True

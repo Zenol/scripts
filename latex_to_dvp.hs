@@ -278,8 +278,8 @@ isLineSep :: String -> Bool
 isLineSep = null . dropWhile isSpace
 
 filterQuote :: String -> String
-filterQuote ('\'' : '\'' : xs) = '"' : filterQuote xs
-filterQuote ('`'  : '`'  : xs) = '"' : filterQuote xs
+filterQuote ('\'' : '\'' : xs) = ' ' : '»' : filterQuote xs
+filterQuote ('`'  : '`'  : xs) = '«' : ' ' : filterQuote xs
 filterQuote (x : xs) = x : filterQuote xs
 filterQuote [] = []
 

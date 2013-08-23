@@ -213,8 +213,23 @@ blockToXML w  (Para [Image is (url, title)]) = do
   return . Left $ "image" <!> ["src" |= url, "titre" |= title, "alt" |= alt] |. emptyXML
 blockToXML w  (Plain is) = liftM htmlBrut $
   withState (\s -> s {stPlain = True}) $ warp w is id
-blockToXML w  (Plain is) = liftM htmlBrut $
-  withState (\s -> s {stPlain = True}) $ warp w is id
+blockToXML w  (CodeBlock (id, classes, xs) code ) = return . Left $
+  "code" <!> args |. (verbaText code)
+  where
+    args = concat [ maybeDo ("langage" |=) (listToMaybe classes)
+                  , maybeDo ("titre" |=) (lookup "titre" xs)
+                  , maybeDo ("startLine" |=) (lookup "startFrom" xs)
+                  , maybeDo ("showLines" |=) $ case (lookup "showLines" xs) of
+                       Nothing -> case (lookup "startFrom" xs) of
+                         Nothing -> case ".numberLines" `elem` classes of
+                           True -> Just "1"
+                           False -> Nothing
+                         Just _  -> Just "1"
+                       Just s -> Just s
+                  ]
+    maybeDo :: (a -> b) -> Maybe a -> [b]
+    maybeDo f v = maybeToList $ fmap f v
+
 blockToXML w (Header level (id, _, _) is) = do
   title <- inlineListToXML w is
   return $ Right (level, id, title)

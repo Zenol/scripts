@@ -42,7 +42,11 @@ import           Data.Default (Default(..))
 import           Control.Monad.State
 import           Data.Maybe
 import qualified Data.Set as Set
-import           Data.Char (ord)
+import           Data.Char (ord, toLower)
+import           Control.Applicative (Alternative(..), (<|>), (*>), (<$), (<$>))
+import           Data.List
+import           Text.Numeral.Roman
+import           Numeric (showIntAtBase)
 -- App
 import           System.IO
 -- Pandoc
@@ -97,6 +101,9 @@ instance Default WriterState
 incrementLatex :: State WriterState ()
 incrementLatex = modify (\s -> s {stLatex = 1 + stLatex s})
 
+plainMode :: Bool -> State WriterState ()
+plainMode mode = modify (\s -> s {stPlain = True})
+
 (<>) :: Node t => String -> t -> Element
 (<>) = unode
 infixr 8 <>
@@ -137,7 +144,11 @@ instance IsXML Content where
 instance IsXML XML where
   toXML = id
 
--- | Usefull function if you wan't to convert from french quote to english quote («  » vs “”)
+maybeDo :: (a -> b) -> Maybe a -> [b]
+maybeDo f v = maybeToList $ fmap f v
+
+-- | Usefull function if you wan't to convert from french quote
+--   to english quote («  » vs “”).
 frenchQuoteToEnglish :: String -> String
 frenchQuoteToEnglish ('«' : ' ' : xs) = '“' : (frenchQuoteToEnglish xs)
 frenchQuoteToEnglish (' ' : '»' : xs) = '”' : (frenchQuoteToEnglish xs)
@@ -145,6 +156,18 @@ frenchQuoteToEnglish ('«' : xs)       = '“' : (frenchQuoteToEnglish xs)
 frenchQuoteToEnglish ('»' : xs)       = '”' : (frenchQuoteToEnglish xs)
 frenchQuoteToEnglish (x   : xs)       = x   : (frenchQuoteToEnglish xs)
 frenchQuoteToEnglish []               = []
+
+displayListStyle :: ListNumberStyle -> String
+displayListStyle DefaultStyle = "1"
+displayListStyle Example = "1"
+displayListStyle Decimal = "1"
+displayListStyle LowerRoman = "i"
+displayListStyle UpperRoman = "I"
+displayListStyle LowerAlpha = "a"
+displayListStyle UpperAlpha = "A"
+
+showAlpha :: Int -> String
+showAlpha n = showIntAtBase 26 (\n -> ['A' .. 'Z'] !! n) n ""
 
 -- Writer
 
@@ -158,7 +181,7 @@ writeDvp opts document = extract $ runState (pandocToDvp opts document) def
 renderDvp :: XML -> DVP
 renderDvp = DVP . (xmlHeader ++) . display . unode "document"
   where
-    -- Using extra whith space result in wrong typography.
+    -- Using extra whith space may result in typo. or unreadable output.
     display = ppcElement (useExtraWhiteSpace False prettyConfigPP)
     xmlHeader = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n"
 
@@ -188,6 +211,7 @@ blockListToXML w xs = do
       xmlSubtree <- sectionify subtree
       xmlNeighboor <- sectionify neighboor
       return $ (:)
+        --TODO : Add paragraph numbering through State WiterState.
         ("section" <^> ["id" |= id] |. (("title" <^> title) : xmlSubtree))
         (xmlNeighboor)
     sectionify ((Left x) : xs) = (x++) `fmap` sectionify xs
@@ -198,42 +222,83 @@ blockListToXML w xs = do
 
 
 paragraph :: XML -> Either XML SectionHeader
-paragraph = Left . toXML . ("paragraph" <>)
-
-htmlBrut :: XML -> Either XML SectionHeader
-htmlBrut = Left . toXML . ("html-brut" <>)
+paragraph = Left . ("paragraph" <!>)
 
 blockToXML :: WriterOptions -> Block -> State WriterState (Either XML SectionHeader)
-blockToXML w  (Para is) = paragraph `liftM` warp w is id
+blockToXML w  (Para is) = work =<< gets stPlain
+  where
+    work st = case st of
+      False -> paragraph <$> warp w is id
+      True  -> (Left . inlineParagraph) <$> warp w is id
+    inlineParagraph xml = concat [xml, "br" <!> emptyXML, "br" <!> emptyXML]
 blockToXML w (Para [Image alt (src, 'f':'i':'g':':':title)]) =
   blockToXML w (Para [Image alt (src, title)])
 blockToXML w  (Para [Image is (url, title)]) = do
   content <- inlineListToXML w is
   let alt = concat $ fmap showContent content
   return . Left $ "image" <!> ["src" |= url, "titre" |= title, "alt" |= alt] |. emptyXML
-blockToXML w  (Plain is) = liftM htmlBrut $
-  withState (\s -> s {stPlain = True}) $ warp w is id
+blockToXML w  (Plain is) = do
+  mode <- gets stPlain
+  plainMode True
+  v <- warp w is id
+  plainMode mode
+  return . Left $ v
 blockToXML w  (CodeBlock (id, classes, xs) code ) = return . Left $
   "code" <!> args |. (verbaText code)
   where
-    args = concat [ maybeDo ("langage" |=) (listToMaybe classes)
+    args = concat [ maybeDo ("langage" |=) $
+       (listToMaybe . filter ("numberLines" /=) $ classes)
                   , maybeDo ("titre" |=) (lookup "titre" xs)
-                  , maybeDo ("startLine" |=) (lookup "startFrom" xs)
-                  , maybeDo ("showLines" |=) $ case (lookup "showLines" xs) of
-                       Nothing -> case (lookup "startFrom" xs) of
-                         Nothing -> case ".numberLines" `elem` classes of
-                           True -> Just "1"
-                           False -> Nothing
-                         Just _  -> Just "1"
-                       Just s -> Just s
+                  , maybeDo ("startLine" |=) $
+       (lookup "startFrom" xs) <|> ("1" <$ find ("numberLines"==) classes)
+                  , maybeDo ("showLines" |=) $
+       (lookup "showLines" xs
+        <|> lookup "startFrom" xs
+        <|> "1" <$ find ("numberLines"==) classes) *> Just "1"
                   ]
-    maybeDo :: (a -> b) -> Maybe a -> [b]
-    maybeDo f v = maybeToList $ fmap f v
-
 blockToXML w (Header level (id, _, _) is) = do
   title <- inlineListToXML w is
   return $ Right (level, id, title)
+-- TODO : Find a nice way to handle BlockQuote inside BlockQuote
+blockToXML w (BlockQuote blocks) = do
+  plainMode False
+  quote <- liftM concat $ mapM (clean <=< blockToXML w) blocks
+  plainMode True
+  return . Left $ "citation" <!> quote
+    where
+      clean (Left x) = return x
+      clean (Right _) = return emptyXML
+blockToXML w debug@(OrderedList (start, style, delim) blocks) = do
+  xmls <- mapM (blockListToXML w) blocks
+  return . Left $ "liste" <!> args |.
+    map (\s -> "element" <^> ["useText" |= "0"] |. s) xmls
+  where
+    args = concat [ ["type" |= displayListStyle style]
+                  , maybeDo ("start" |=) $ case start of
+                       1 -> Nothing
+                       s -> Just $ show s
+                  ]
+blockToXML w debug@(BulletList blocks) = do
+  xmls <- mapM (blockListToXML w) blocks
+  return . Left $ "liste" <!> map makeListRoot xmls
+blockToXML w (DefinitionList namedBlocks) = do
+  xmls <- itemify <$> xmlify namedBlocks
+  return . Left $ "liste" <!> xmls
+  where
+    applyInTuple :: ([Inline], [[Block]]) -> State WriterState (XML, [XML])
+    applyInTuple (a, b) = do
+      b' <- mapM (blockListToXML w) b
+      a' <- inlineListToXML w a
+      return (a', b')
+    xmlify :: [([Inline], [[Block]])] -> State WriterState [(XML, [XML])]
+    xmlify = mapM applyInTuple
+    itemify :: [(XML, [XML])] -> XML
+    itemify xmls = xmls >>= \(a, b) ->
+      map (makeListRoot . concat . \s -> ["b" <!> a, toXML ") ", s]) b
 blockToXML w bs = return . Left $ "BLOCK" <!> "UNKNOWNN"
+
+makeListRoot s = "element" <^> ["useText" |= "0"] |. s
+
 
 inlineToXML w (Emph is) = warp w is $ \content ->
   "i" <> content
@@ -270,13 +335,9 @@ inlineToXML w c@(Cite _ is) = do
   warp w is id
   where
     msg = "Citation not supported : " ++ (show c)
-inlineToXML w (Link is (url, "")) = do
-  content <- inlineListToXML w is
-  tag <- (\case {True -> "a" ; False -> "link"}) `liftM` gets stPlain
-  return $ tag <!> ["href" |= url] |. content
 inlineToXML w (Link is (url, title)) = do
   content <- inlineListToXML w is
-  tag <- (\case {True -> "a" ; False -> "link"}) `liftM` gets stPlain
+  tag <- (\case {True -> "a" ; False -> "link"}) <$> gets stPlain
   return $ tag <!> ["href" |= url, "title" |= title] |. content
 inlineToXML w (Image is (url, title)) = warp w is $ \content ->
   let alt = concat $ fmap showContent content in
@@ -285,7 +346,7 @@ inlineToXML w (Note bs) = case isEnabled Ext_footnotes w of
     True -> do
       modify (\st -> st{ stNotes = bs : stNotes st })
       ref <- (show . length) `fmap` gets stNotes
-      return . concat . fmap toXML $ ["[", ref, "]"]
+      return $ "renvoi" <!> ["id" |= ref] |. (concat $ toXML `map` ["[", ref, "]"])
     False -> do
       content <- blockListToXML w $ bs
       return . concat $ [toXML "[", content , toXML "]"]
@@ -297,7 +358,7 @@ authorToXML = inlineListToXML
 
 pandocToDvp :: WriterOptions -> Pandoc -> State WriterState DVP
 pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
-  trace (show blocks) $ return ()
+--  trace (show blocks) $ return ()
   title' <- inlineListToXML w title
   page' <- inlineListToXML w title
   authors' <- fmap concat . mapM (authorToXML w) $ authors
@@ -322,7 +383,7 @@ pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
   content <- blockListToXML w blocks
   foot <- case isEnabled Ext_footnotes w of
     False -> return $ emptyXML
-    True  -> fmap (paragify . listify) $ xmlify =<< gets stNotes
+    True  -> fmap (paragify . listify . refify) $ xmlify =<< gets stNotes
   return . renderDvp . concat $ [ headerblock
                                 , authorsblock
                                 , "summary" <!> (content ++ foot)
@@ -331,12 +392,14 @@ pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
     paragify :: XML -> XML
     paragify xml = "section" <!> ["title" <> "Références", "paragraph" <> xml]
     listify :: [XML] -> XML
-    listify xmls = "liste" <!> map (\s -> "element" <^> ["useText" |= "0"] |. s) xmls
+    listify xmls = "liste" <!> ["type" |= "1"] |.
+      map (\s -> "element" <^> ["useText" |= "0"] |. s) xmls
+    refify :: [XML] -> [XML]
+    refify l = map
+                 (\(n, xml) -> ("signet" <^> ["id" |= (show n)] |. emptyXML) : xml)
+                 (zip [1..] l)
     xmlify :: [[Block]] -> State WriterState [XML]
     xmlify = mapM (blockListToXML w)
-      where
-        clean (Left x) = return x
-        clean (Right _) = return emptyXML
 
 {- BEGINING OF THE SCRIPT -}
 
@@ -351,6 +414,9 @@ main = do
   mapM_ (hPutStrLn stderr) $ snd o
   B.putStrLn . B.pack . escape . dvpToString $ fst o
   where
+    -- This is a big hack, because escape is piped after the XML processing,
+    -- and <![CDATA[ fields will be affected. But, at least, it output
+    -- wellformed XML since none of the markup use non-latin1 characters.
     escape :: String -> String
     escape s = s >>= \c -> if c < '\x007f'
                            then [c]

@@ -101,8 +101,11 @@ instance Default WriterState
 incrementLatex :: State WriterState ()
 incrementLatex = modify (\s -> s {stLatex = 1 + stLatex s})
 
-plainMode :: Bool -> State WriterState ()
-plainMode mode = modify (\s -> s {stPlain = True})
+plainMode :: Bool -> State WriterState Bool
+plainMode mode = do
+  oldMode <- gets stPlain
+  modify (\s -> s {stPlain = mode})
+  return oldMode
 
 (<>) :: Node t => String -> t -> Element
 (<>) = unode
@@ -238,8 +241,7 @@ blockToXML w  (Para [Image is (url, title)]) = do
   let alt = concat $ fmap showContent content
   return . Left $ "image" <!> ["src" |= url, "titre" |= title, "alt" |= alt] |. emptyXML
 blockToXML w  (Plain is) = do
-  mode <- gets stPlain
-  plainMode True
+  mode <- plainMode True
   v <- warp w is id
   plainMode mode
   return . Left $ v
@@ -261,9 +263,9 @@ blockToXML w (Header level (id, _, _) is) = do
   return $ Right (level, id, title)
 -- TODO : Find a nice way to handle BlockQuote inside BlockQuote
 blockToXML w (BlockQuote blocks) = do
-  plainMode False
+  mode <- plainMode True
   quote <- liftM concat $ mapM (clean <=< blockToXML w) blocks
-  plainMode True
+  plainMode mode
   return . Left $ "citation" <!> quote
     where
       clean (Left x) = return x
@@ -293,10 +295,12 @@ blockToXML w (DefinitionList namedBlocks) = do
     xmlify :: [([Inline], [[Block]])] -> State WriterState [(XML, [XML])]
     xmlify = mapM applyInTuple
     itemify :: [(XML, [XML])] -> XML
-    itemify xmls = xmls >>= \(a, b) ->
-      map (makeListRoot . concat . \s -> ["b" <!> a, toXML ") ", s]) b
+    itemify xmls = "liste" <!> map
+      (makeListRoot . \(a, b) -> ("paragraph" <!> "b" <!> a) ++ ("liste" <!> map makeListRoot b))
+      xmls
 blockToXML w bs = return . Left $ "BLOCK" <!> "UNKNOWNN"
 
+makeListRoot s = "element" <^> ["useText" |= "0"] |. s
 makeListRoot s = "element" <^> ["useText" |= "0"] |. s
 
 
@@ -335,10 +339,12 @@ inlineToXML w c@(Cite _ is) = do
   warp w is id
   where
     msg = "Citation not supported : " ++ (show c)
+inlineToXML w (Link is (url, "")) = do
+  content <- inlineListToXML w is
+  return $ "link" <!> ["href" |= url] |. content
 inlineToXML w (Link is (url, title)) = do
   content <- inlineListToXML w is
-  tag <- (\case {True -> "a" ; False -> "link"}) <$> gets stPlain
-  return $ tag <!> ["href" |= url, "title" |= title] |. content
+  return $ "link" <!> ["href" |= url, "title" |= title] |. content
 inlineToXML w (Image is (url, title)) = warp w is $ \content ->
   let alt = concat $ fmap showContent content in
   "image" <!> ["src" |= url, "titre" |= title, "alt" |= alt] |. emptyXML
@@ -390,7 +396,7 @@ pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
                                 ]
   where
     paragify :: XML -> XML
-    paragify xml = "section" <!> ["title" <> "Références", "paragraph" <> xml]
+    paragify xml = "section" <!> ("title" <!> "Références") ++ xml
     listify :: [XML] -> XML
     listify xmls = "liste" <!> ["type" |= "1"] |.
       map (\s -> "element" <^> ["useText" |= "0"] |. s) xmls

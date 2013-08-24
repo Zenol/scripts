@@ -107,6 +107,9 @@ plainMode mode = do
   modify (\s -> s {stPlain = mode})
   return oldMode
 
+writeLog :: String -> State WriterState ()
+writeLog msg = modify (\s -> s { stLogs = msg : stLogs s })
+
 (<>) :: Node t => String -> t -> Element
 (<>) = unode
 infixr 8 <>
@@ -295,9 +298,15 @@ blockToXML w (DefinitionList namedBlocks) = do
     xmlify :: [([Inline], [[Block]])] -> State WriterState [(XML, [XML])]
     xmlify = mapM applyInTuple
     itemify :: [(XML, [XML])] -> XML
-    itemify xmls = "liste" <!> map
-      (makeListRoot . \(a, b) -> ("paragraph" <!> "b" <!> a) ++ ("liste" <!> map makeListRoot b))
-      xmls
+    itemify xmls = "liste" <!>
+      [makeListRoot $ "paragraph" <!> "b" <!> a
+                   ++ "liste" <!> map makeListRoot b
+      | (a, b) <- xmls]
+blockToXML w (HorizontalRule) = do
+  return . Left $ "html-brut" <!> verbaText "<hr />"
+blockToXML w table@(Table caption align  rcW cH rows) = do
+  writeLog $ "Table not yet implemented: " ++ (show table)
+  return . Left $ emptyXML
 blockToXML w bs = return . Left $ "BLOCK" <!> "UNKNOWNN"
 
 makeListRoot s = "element" <^> ["useText" |= "0"] |. s
@@ -330,15 +339,11 @@ inlineToXML w (Math InlineMath str) = do
   return $ "latex" <!> ["id" |= id] |. (verbaText str)
 -- Raw stuff isn't supported
 inlineToXML w (RawInline f str) = do
-  modify (\s -> s { stLogs = msg : stLogs s })
+  writeLog $ "RawInline not supported: " ++ f ++ " - " ++ str
   return . toXML $ str
-  where
-    msg = "RawInline not supported : " ++ f ++ " - " ++ str
 inlineToXML w c@(Cite _ is) = do
-  modify (\s -> s { stLogs = msg : stLogs s })
+  writeLog $ "Citation not supported: " ++ (show c)
   warp w is id
-  where
-    msg = "Citation not supported : " ++ (show c)
 inlineToXML w (Link is (url, "")) = do
   content <- inlineListToXML w is
   return $ "link" <!> ["href" |= url] |. content
@@ -432,7 +437,9 @@ writerNoFootnote s = s { writerExtensions = writerExtensions s Set.\\ Set.fromLi
 
 readerOpts = def
     { readerSmart = True
-    , readerExtensions = Set.unions [pandocExtensions, multimarkdownExtensions]
+    , readerExtensions = Set.unions
+        [ pandocExtensions, multimarkdownExtensions] Set.\\
+        Set.fromList [Ext_raw_html]
     }
 
 {- END OF THE SCRIPT -}

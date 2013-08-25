@@ -230,6 +230,9 @@ blockListToXML w xs = do
 paragraph :: XML -> Either XML SectionHeader
 paragraph = Left . ("paragraph" <!>)
 
+xmlRet :: (Monad m, IsXML t) => t -> m (Either XML a)
+xmlRet = return . Left . toXML
+
 blockToXML :: WriterOptions -> Block -> State WriterState (Either XML SectionHeader)
 blockToXML w  (Para is) = work =<< gets stPlain
   where
@@ -240,15 +243,14 @@ blockToXML w  (Para is) = work =<< gets stPlain
 blockToXML w (Para [Image alt (src, 'f':'i':'g':':':title)]) =
   blockToXML w (Para [Image alt (src, title)])
 blockToXML w  (Para [Image is (url, title)]) = do
-  content <- inlineListToXML w is
-  let alt = concat $ fmap showContent content
-  return . Left $ "image" <!> ["src" |= url, "titre" |= title, "alt" |= alt] |. emptyXML
+  alt <- liftM (concat . map showContent) $ inlineListToXML w is
+  xmlRet $ "image" <!> ["src" |= url, "titre" |= title, "alt" |= alt] |. emptyXML
 blockToXML w  (Plain is) = do
   mode <- plainMode True
   v <- warp w is id
   plainMode mode
-  return . Left $ v
-blockToXML w  (CodeBlock (id, classes, xs) code ) = return . Left $
+  xmlRet $ v
+blockToXML w  (CodeBlock (id, classes, xs) code ) = xmlRet $
   "code" <!> args |. (verbaText code)
   where
     args = concat [ maybeDo ("langage" |=) $
@@ -269,13 +271,13 @@ blockToXML w (BlockQuote blocks) = do
   mode <- plainMode True
   quote <- liftM concat $ mapM (clean <=< blockToXML w) blocks
   plainMode mode
-  return . Left $ "citation" <!> quote
+  xmlRet $ "citation" <!> quote
     where
       clean (Left x) = return x
       clean (Right _) = return emptyXML
 blockToXML w debug@(OrderedList (start, style, delim) blocks) = do
   xmls <- mapM (blockListToXML w) blocks
-  return . Left $ "liste" <!> args |.
+  xmlRet $ "liste" <!> args |.
     map (\s -> "element" <^> ["useText" |= "0"] |. s) xmls
   where
     args = concat [ ["type" |= displayListStyle style]
@@ -285,10 +287,10 @@ blockToXML w debug@(OrderedList (start, style, delim) blocks) = do
                   ]
 blockToXML w debug@(BulletList blocks) = do
   xmls <- mapM (blockListToXML w) blocks
-  return . Left $ "liste" <!> map makeListRoot xmls
+  xmlRet $ "liste" <!> map makeListRoot xmls
 blockToXML w (DefinitionList namedBlocks) = do
   xmls <- itemify <$> xmlify namedBlocks
-  return . Left $ "liste" <!> xmls
+  xmlRet $ "liste" <!> xmls
   where
     applyInTuple :: ([Inline], [[Block]]) -> State WriterState (XML, [XML])
     applyInTuple (a, b) = do
@@ -303,15 +305,33 @@ blockToXML w (DefinitionList namedBlocks) = do
                    ++ "liste" <!> map makeListRoot b
       | (a, b) <- xmls]
 blockToXML w (HorizontalRule) = do
-  return . Left $ "html-brut" <!> verbaText "<hr />"
-blockToXML w table@(Table caption align  rcW cH rows) = do
+  xmlRet $ "html-brut" <!> verbaText "<hr />"
+blockToXML w table@(Table caption aligns rcWs headers rows) = do
   writeLog $ "Table not yet implemented: " ++ (show table)
-  return . Left $ emptyXML
-blockToXML w bs = return . Left $ "BLOCK" <!> "UNKNOWNN"
+  titles <- liftM concat .  mapM (titlify w) $ zip3 aligns rcWs headers
+  lines <- mapM linify rows
+  xmlRet $ "tableau" <!> ["border" |= "1", "legende" |= "Légende du tableau"] |.
+    ("entete" <!> titles) ++ (concat lines)
+  where
+    getAlign AlignLeft = Just "left"
+    getAlign AlignRight = Just "right"
+    getAlign AlignCenter = Just "center"
+    getAlign AlignDefault = Nothing
+    width rcW = show (truncate $ 100 * rcW)
+    linify e = return $ emptyXML
+    titlify w (align, rcW, block) = do
+      xmls <- blockListToXML w block
+      return . ("colonne" <!>) $
+        concat [ ["useText" |= "0"]
+               , maybeDo ("aling" |=) (getAlign align)
+               , if (rcW /= 0) then ["width" |= (width rcW ++ "%")] else []
+               ] |. xmls
+blockToXML w block = do
+  writeLog $ "Unknown block: " ++ (show block)
+  xmlRet $ emptyXML
 
 makeListRoot s = "element" <^> ["useText" |= "0"] |. s
 makeListRoot s = "element" <^> ["useText" |= "0"] |. s
-
 
 inlineToXML w (Emph is) = warp w is $ \content ->
   "i" <> content

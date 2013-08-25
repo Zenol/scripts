@@ -1,4 +1,3 @@
-#!/usr/bin/runhaskell -w
 {-
 Copyright (c) 2013 Jérémy Cochoy
 
@@ -22,27 +21,24 @@ freely, subject to the following restrictions:
    distribution.
 -}
 
-{-----------------------------------------------------------------------
-    NOTICE : If you just want to configure the settings of this script,
-             jump to BEGINING OF THE SCRIPT at the end of this file.
- -----------------------------------------------------------------------}
-
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
 
--- App
-import Debug.Trace
-import           Data.Text.ICU.Convert as ICU
-import qualified Data.Text.IO as TIO
+module Text.Pandoc.Writers.Dvp
+  ( writeDvp
+  , writeDvp'
+  , frenchQuoteToEnglish
+  , DVP
+  , dvpToString
+  ) where
 
 -- Usefull
 import           Data.String (IsString(..))
 import           Data.Default (Default(..))
 import           Control.Monad.State
 import           Data.Maybe
-import qualified Data.Set as Set
 import           Data.Char (ord, toLower)
 import           Control.Applicative (Alternative(..), (<|>), (*>), (<$), (<$>))
 import           Data.List
@@ -53,11 +49,6 @@ import           System.IO
 -- Pandoc
 import           Text.Pandoc
 import           Text.Pandoc.Shared (escapeStringUsing)
--- UTF8
-import           Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
-import qualified Data.ByteString.Char8 as B
 -- XML
 import           Text.XML.Light (unode,
                                  Content(..),
@@ -229,11 +220,7 @@ displayListStyle UpperRoman = "I"
 displayListStyle LowerAlpha = "a"
 displayListStyle UpperAlpha = "A"
 
-showAlpha :: Int -> String
-showAlpha n = showIntAtBase 26 (\n -> ['A' .. 'Z'] !! n) n ""
-
 -- Writer
-
 
 -- | Convert pandoc document to a DVP xml string, hidding warnings.
 writeDvp :: WriterOptions -> Pandoc -> String
@@ -247,11 +234,18 @@ writeDvp' opts document = extract $ runState (pandocToDvp opts document) def
 
 -- | Take a XML tree and output a string containing xml header
 renderDvp :: XML -> DVP
-renderDvp = DVP . (xmlHeader ++) . display . unode "document"
+renderDvp = DVP . escape . (xmlHeader ++) . display . unode "document"
   where
     -- Using extra whith space may result in typo. or unreadable output.
     display = ppcElement (useExtraWhiteSpace False prettyConfigPP)
     xmlHeader = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n"
+    -- This is a big hack, because escape is piped after the XML processing,
+    -- and <![CDATA[ fields will be affected. But, at least, it output
+    -- wellformed XML since none of the markup use non-latin1 characters.
+    escape :: String -> String
+    escape s = s >>= \c -> if c < '\x007f'
+                           then [c]
+                           else "&#" ++ show (ord c) ++ ";"
 
 inlineListToXML :: WriterOptions -> [Inline] -> State WriterState XML
 inlineListToXML opts lst = return . concat =<< mapM (inlineToXML opts) lst
@@ -400,7 +394,6 @@ blockToXML w block = do
   xmlRet $ emptyXML
 
 makeListRoot s = "element" <^> ["useText" |= "0"] |. s
-makeListRoot s = "element" <^> ["useText" |= "0"] |. s
 
 inlineToXML w (Emph is) = warp w is $ \content ->
   "i" <> content
@@ -458,7 +451,6 @@ authorToXML = inlineListToXML
 
 pandocToDvp :: WriterOptions -> Pandoc -> State WriterState DVP
 pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
---  trace (show blocks) $ return ()
   title' <- inlineListToXML w title
   page' <- inlineListToXML w title
   authors' <- fmap concat . mapM (authorToXML w) $ authors
@@ -504,35 +496,3 @@ pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
                  (zip [1..] l)
     xmlify :: [[Block]] -> State WriterState [XML]
     xmlify = mapM (blockListToXML w)
-
-{- BEGINING OF THE SCRIPT -}
-
-{- This part is the script reading MD from stdio, and outputing xml to stdout.
-   The folowing line aren't licenced, and you can "Do What The Fuck you want"
-   whit them -}
-
-main :: IO ()
-main = do
-  s <- T.unpack `liftM` TIO.getContents
-  o <- return . writeDvp' (def) . readMarkdown readerOpts $ s
-  mapM_ (hPutStrLn stderr) $ snd o
-  B.putStrLn . B.pack . escape . dvpToString $ fst o
-  where
-    -- This is a big hack, because escape is piped after the XML processing,
-    -- and <![CDATA[ fields will be affected. But, at least, it output
-    -- wellformed XML since none of the markup use non-latin1 characters.
-    escape :: String -> String
-    escape s = s >>= \c -> if c < '\x007f'
-                           then [c]
-                           else "&#" ++ show (ord c) ++ ";"
-
-writerNoFootnote s = s { writerExtensions = writerExtensions s Set.\\ Set.fromList [Ext_footnotes]}
-
-readerOpts = def
-    { readerSmart = True
-    , readerExtensions = Set.unions
-        [ pandocExtensions, multimarkdownExtensions] Set.\\
-        Set.fromList [Ext_raw_html]
-    }
-
-{- END OF THE SCRIPT -}

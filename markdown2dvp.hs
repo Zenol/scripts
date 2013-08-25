@@ -30,6 +30,7 @@ freely, subject to the following restrictions:
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RecordWildCards #-}
 
 -- App
 import Debug.Trace
@@ -83,25 +84,68 @@ instance IsString DVP where
 dvpToString :: DVP -> String
 dvpToString (DVP s) = s
 
+-- | Zipper that focus the current section level
+data SecNumZipper = SecNumZipper { snzDeep           :: Int
+                                 , snzCurrentSection :: Int
+                                 , snzParentSections :: [Int]
+                                 }
+
+instance Default SecNumZipper where
+  def = SecNumZipper { snzDeep = 0
+                     , snzCurrentSection = 1
+                     , snzParentSections = []
+                     }
+
+-- | Go one section up (i.e. forget about the current sub section
+--   and get back to parrent).
+snzUp :: SecNumZipper -> SecNumZipper
+snzUp snz@SecNumZipper{..} = case snzParentSections of
+  [] -> error "Tryed to go up in the SecNumZipper, but snzParentSections is empty!"
+  (x : xs) -> snz {snzCurrentSection = x, snzParentSections = xs}
+
+-- | Go to the next section (increment the section number).
+snzInc :: SecNumZipper -> SecNumZipper
+snzInc snz = snz {snzCurrentSection = 1 + snzCurrentSection snz}
+
+-- | Do one section up (i.e. create a new sub section inside the
+--   current section).
+snzDown :: SecNumZipper -> SecNumZipper
+snzDown SecNumZipper{..} = SecNumZipper (snzDeep + 1) 1
+                           (snzCurrentSection : snzParentSections)
+
 type Notes = [[Block]]
 type Refs = [([Inline], Target)]
 type SectionHeader = (Int, String, XML)
 data WriterState = WriterState { stNotes        :: Notes
                                , stNoXML        :: Bool
-                               , stRefs         :: Refs -- do we need it ??
+                               , stRefs         :: Refs
+                               , stSecNum       :: SecNumZipper
+                                 -- Unused, just in case we implement
+                                 -- citations.
                                , stLatex        :: Int
                                , stPlain        :: Bool
                                , stLogs         :: [String]}
-instance Default WriterState
-  where def = WriterState { stNotes = []
-                          , stNoXML = False
-                          , stRefs = []
-                          , stLatex = 0
-                          , stLogs = []
-                          , stPlain = False
-                          }
+instance Default WriterState where
+  def = WriterState { stNotes = []
+                    , stNoXML = False
+                    , stRefs = []
+                    , stSecNum = def
+                    , stLatex = 0
+                    , stLogs = []
+                    , stPlain = False
+                    }
 incrementLatex :: State WriterState ()
 incrementLatex = modify (\s -> s {stLatex = 1 + stLatex s})
+
+getSectionId :: State WriterState String
+getSectionId = do
+  snz <- gets stSecNum
+  modify (\s -> s {stSecNum = snzInc $ stSecNum s})
+  let sectionId = snzCurrentSection snz
+  return $ case snzDeep snz of
+    0 -> toRoman sectionId -- Roman
+    1 -> toAlpha sectionId -- Letter
+    _ -> show sectionId
 
 plainMode :: Bool -> State WriterState Bool
 plainMode mode = do
@@ -117,6 +161,9 @@ noXMLMode mode = do
 
 writeLog :: String -> State WriterState ()
 writeLog msg = modify (\s -> s { stLogs = msg : stLogs s })
+
+toAlpha :: Int -> String
+toAlpha m = concat [replicateM n ['A', 'Z'] | n <- [1..]] !! m
 
 (<>) :: Node t => String -> t -> Element
 (<>) = unode
@@ -224,6 +271,7 @@ blockListToXML w xs = do
       let (subtree, neighboor) = span (belongToSubtree level) xs
       xmlSubtree <- sectionify subtree
       xmlNeighboor <- sectionify neighboor
+      sectionId <- getSectionId
       return $ (:)
         --TODO : Add paragraph numbering through State WiterState.
         ("section" <^> ["id" |= id] |. (("title" <^> title) : xmlSubtree))

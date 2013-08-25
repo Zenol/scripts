@@ -234,9 +234,14 @@ showAlpha n = showIntAtBase 26 (\n -> ['A' .. 'Z'] !! n) n ""
 
 -- Writer
 
+
+-- | Convert pandoc document to a DVP xml string, hidding warnings.
+writeDvp :: WriterOptions -> Pandoc -> String
+writeDvp opts document = dvpToString . (\(a, _) -> a) $ writeDvp' opts document
+
 -- | Convert pandoc document to a DVP xml string
-writeDvp :: WriterOptions -> Pandoc -> (DVP, [String])
-writeDvp opts document = extract $ runState (pandocToDvp opts document) def
+writeDvp' :: WriterOptions -> Pandoc -> (DVP, [String])
+writeDvp' opts document = extract $ runState (pandocToDvp opts document) def
   where
     extract (a, b) = (a, stLogs b)
 
@@ -509,7 +514,7 @@ pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
 main :: IO ()
 main = do
   s <- T.unpack `liftM` TIO.getContents
-  o <- return . writeDvp (def) . readMarkdown readerOpts $ s
+  o <- return . writeDvp' (def) . readMarkdown readerOpts $ s
   mapM_ (hPutStrLn stderr) $ snd o
   B.putStrLn . B.pack . escape . dvpToString $ fst o
   where

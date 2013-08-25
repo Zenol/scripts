@@ -1,4 +1,4 @@
-#!/usr/bin/runhaskell
+#!/usr/bin/runhaskell -w
 {-
 Copyright (c) 2013 Jérémy Cochoy
 

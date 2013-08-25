@@ -331,7 +331,7 @@ blockToXML w (BlockQuote blocks) = do
     where
       clean (Left x) = return x
       clean (Right _) = return emptyXML
-blockToXML w debug@(OrderedList (start, style, delim) blocks) = do
+blockToXML w (OrderedList (start, style, delim) blocks) = do
   xmls <- mapM (blockListToXML w) blocks
   xmlRet $ "liste" <!> args |.
     map (\s -> "element" <^> ["useText" |= "0"] |. s) xmls
@@ -341,7 +341,7 @@ blockToXML w debug@(OrderedList (start, style, delim) blocks) = do
                        1 -> Nothing
                        s -> Just $ show s
                   ]
-blockToXML w debug@(BulletList blocks) = do
+blockToXML w (BulletList blocks) = do
   xmls <- mapM (blockListToXML w) blocks
   xmlRet $ "liste" <!> map makeListRoot xmls
 blockToXML w (DefinitionList namedBlocks) = do
@@ -356,14 +356,13 @@ blockToXML w (DefinitionList namedBlocks) = do
     xmlify :: [([Inline], [[Block]])] -> State WriterState [(XML, [XML])]
     xmlify = mapM applyInTuple
     itemify :: [(XML, [XML])] -> XML
-    itemify xmls = "liste" <!>
-      [makeListRoot $ "paragraph" <!> "b" <!> a
+    itemify xmls = toXML $
+      [makeListRoot $ ("paragraph" <!> "b" <!> a)
                    ++ "liste" <!> map makeListRoot b
       | (a, b) <- xmls]
 blockToXML w (HorizontalRule) = do
   xmlRet $ "html-brut" <!> verbaText "<hr />"
-blockToXML w table@(Table caption aligns rcWs headers rows) = do
-  writeLog $ "Table not yet implemented: " ++ (show table)
+blockToXML w (Table caption aligns rcWs headers rows) = do
   caption' <- liftM (concat . fmap showContent) $ inlineListToXML w caption
   titles <- liftM concat . mapM cellify $ zip3 aligns rcWs headers
   lines <- mapM linify $ map (zip3 aligns rcWs) rows
@@ -479,12 +478,14 @@ pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
                                 ]
   where
     paragify :: XML -> State WriterState XML
+    paragify [] = return emptyXML
     paragify xml = do
       sectionId <- getSectionId
        -- Since this function is the last building a section, we don't need:
       modifySnz snzInc
       return $ "section" <!> ["id" |= sectionId] |. (("title" <!> "Références") ++ xml)
     listify :: [XML] -> XML
+    listify [] = []
     listify xmls = "liste" <!> ["type" |= "1"] |.
       map (\s -> "element" <^> ["useText" |= "0"] |. s) xmls
     refify :: [XML] -> [XML]

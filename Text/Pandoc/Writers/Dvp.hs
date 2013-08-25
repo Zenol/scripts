@@ -44,11 +44,8 @@ import           Control.Applicative (Alternative(..), (<|>), (*>), (<$), (<$>))
 import           Data.List
 import           Text.Numeral.Roman
 import           Numeric (showIntAtBase)
--- App
-import           System.IO
 -- Pandoc
 import           Text.Pandoc
-import           Text.Pandoc.Shared (escapeStringUsing)
 -- XML
 import           Text.XML.Light (unode,
                                  Content(..),

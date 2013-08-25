@@ -32,16 +32,21 @@ freely, subject to the following restrictions:
    whit them -}
 
 -- App
+import           System.IO
 import           Debug.Trace
 import           Data.Text.ICU.Convert as ICU
 import qualified Data.Text.IO as TIO
-import           Text.Pandoc.Writers.Dvp
 import qualified Data.Set as Set
+import           Text.Pandoc
+import           Text.Pandoc.Writers.Dvp
 -- UTF8
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.ByteString.Char8 as B
+-- Usefull
+import           Control.Monad
+import           Data.Default
 
 main :: IO ()
 main = do

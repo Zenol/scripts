@@ -87,12 +87,14 @@ type Notes = [[Block]]
 type Refs = [([Inline], Target)]
 type SectionHeader = (Int, String, XML)
 data WriterState = WriterState { stNotes        :: Notes
+                               , stNoXML        :: Bool
                                , stRefs         :: Refs -- do we need it ??
                                , stLatex        :: Int
                                , stPlain        :: Bool
                                , stLogs         :: [String]}
 instance Default WriterState
   where def = WriterState { stNotes = []
+                          , stNoXML = False
                           , stRefs = []
                           , stLatex = 0
                           , stLogs = []
@@ -105,6 +107,12 @@ plainMode :: Bool -> State WriterState Bool
 plainMode mode = do
   oldMode <- gets stPlain
   modify (\s -> s {stPlain = mode})
+  return oldMode
+
+noXMLMode :: Bool -> State WriterState Bool
+noXMLMode mode = do
+  oldMode <- gets stNoXML
+  modify (\s -> s {stNoXML = mode})
   return oldMode
 
 writeLog :: String -> State WriterState ()
@@ -308,22 +316,26 @@ blockToXML w (HorizontalRule) = do
   xmlRet $ "html-brut" <!> verbaText "<hr />"
 blockToXML w table@(Table caption aligns rcWs headers rows) = do
   writeLog $ "Table not yet implemented: " ++ (show table)
-  titles <- liftM concat .  mapM (titlify w) $ zip3 aligns rcWs headers
-  lines <- mapM linify rows
-  xmlRet $ "tableau" <!> ["border" |= "1", "legende" |= "Légende du tableau"] |.
-    ("entete" <!> titles) ++ (concat lines)
+  caption' <- liftM (concat . fmap showContent) $ inlineListToXML w caption
+  titles <- liftM concat . mapM cellify $ zip3 aligns rcWs headers
+  lines <- mapM linify $ map (zip3 aligns rcWs) rows
+  xmlRet $ "tableau" <!> ["border" |= "1", "legende" |= caption'] |.
+    ("entete" <!> titles ++ concat lines)
   where
     getAlign AlignLeft = Just "left"
     getAlign AlignRight = Just "right"
     getAlign AlignCenter = Just "center"
     getAlign AlignDefault = Nothing
     width rcW = show (truncate $ 100 * rcW)
-    linify e = return $ emptyXML
-    titlify w (align, rcW, block) = do
+    linify :: [(Alignment, Double, [Block])] -> State WriterState XML
+    linify cells = do
+      xmls <- mapM cellify $ cells
+      return $ "ligne" <!> (concat xmls)
+    cellify (align, rcW, block) = do
       xmls <- blockListToXML w block
       return . ("colonne" <!>) $
         concat [ ["useText" |= "0"]
-               , maybeDo ("aling" |=) (getAlign align)
+               , maybeDo ("align" |=) (getAlign align)
                , if (rcW /= 0) then ["width" |= (width rcW ++ "%")] else []
                ] |. xmls
 blockToXML w block = do
@@ -371,7 +383,7 @@ inlineToXML w (Link is (url, title)) = do
   content <- inlineListToXML w is
   return $ "link" <!> ["href" |= url, "title" |= title] |. content
 inlineToXML w (Image is (url, title)) = warp w is $ \content ->
-  let alt = concat $ fmap showContent content in
+  let alt = concat $ map showContent content in
   "image" <!> ["src" |= url, "titre" |= title, "alt" |= alt] |. emptyXML
 inlineToXML w (Note bs) = case isEnabled Ext_footnotes w of
     True -> do
@@ -421,7 +433,7 @@ pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
                                 ]
   where
     paragify :: XML -> XML
-    paragify xml = "section" <!> ("title" <!> "Références") ++ xml
+    paragify xml = "section" <!> (("title" <!> "Références") ++ xml)
     listify :: [XML] -> XML
     listify xmls = "liste" <!> ["type" |= "1"] |.
       map (\s -> "element" <^> ["useText" |= "0"] |. s) xmls

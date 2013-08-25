@@ -443,13 +443,17 @@ inlineToXML w (Note bs) = case isEnabled Ext_footnotes w of
 inlineToXML _ x = return . toXML . show $ x
 
 authorToXML :: WriterOptions -> [Inline] -> State WriterState XML
-authorToXML = inlineListToXML
+authorToXML w is = do
+  xml <- inlineListToXML w is
+  return $ "authorDescription" <!>
+    ["name" |= "???", "role" |= "auteur"] |. ("fullname" <!> xml)
 
 pandocToDvp :: WriterOptions -> Pandoc -> State WriterState DVP
 pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
   title' <- inlineListToXML w title
   page' <- inlineListToXML w title
   authors' <- fmap concat . mapM (authorToXML w) $ authors
+  authorsPlain <- fmap concat . mapM (inlineListToXML w) $ authors
   date' <- inlineListToXML w date
   headerblock <- return $ "entete" <!>
       [ "rubrique"  <> "89"
@@ -458,7 +462,7 @@ pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
       , "date"      <> date'
       , "miseajour" <> date'
       , "extratag"  <> emptyXML
-      , "licauteur" <> maybe emptyXML toXML (listToMaybe authors')
+      , "licauteur" <> maybe emptyXML toXML (listToMaybe authorsPlain)
       , "lictype"   <> "6"
       , "licannee"  <> "2013"
       , "serveur"   <> "zenol-http"

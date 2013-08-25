@@ -85,14 +85,12 @@ dvpToString :: DVP -> String
 dvpToString (DVP s) = s
 
 -- | Zipper that focus the current section level
-data SecNumZipper = SecNumZipper { snzDeep           :: Int
-                                 , snzCurrentSection :: Int
+data SecNumZipper = SecNumZipper { snzCurrentSection :: Int
                                  , snzParentSections :: [Int]
                                  }
 
 instance Default SecNumZipper where
-  def = SecNumZipper { snzDeep = 0
-                     , snzCurrentSection = 1
+  def = SecNumZipper { snzCurrentSection = 1
                      , snzParentSections = []
                      }
 
@@ -110,8 +108,10 @@ snzInc snz = snz {snzCurrentSection = 1 + snzCurrentSection snz}
 -- | Do one section up (i.e. create a new sub section inside the
 --   current section).
 snzDown :: SecNumZipper -> SecNumZipper
-snzDown SecNumZipper{..} = SecNumZipper (snzDeep + 1) 1
-                           (snzCurrentSection : snzParentSections)
+snzDown SecNumZipper{..} = SecNumZipper 1 (snzCurrentSection : snzParentSections)
+
+modifySnz :: (SecNumZipper -> SecNumZipper) -> State WriterState ()
+modifySnz f = modify (\s -> s {stSecNum = f $ stSecNum s})
 
 type Notes = [[Block]]
 type Refs = [([Inline], Target)]
@@ -125,6 +125,7 @@ data WriterState = WriterState { stNotes        :: Notes
                                , stLatex        :: Int
                                , stPlain        :: Bool
                                , stLogs         :: [String]}
+
 instance Default WriterState where
   def = WriterState { stNotes = []
                     , stNoXML = False
@@ -140,12 +141,13 @@ incrementLatex = modify (\s -> s {stLatex = 1 + stLatex s})
 getSectionId :: State WriterState String
 getSectionId = do
   snz <- gets stSecNum
-  modify (\s -> s {stSecNum = snzInc $ stSecNum s})
-  let sectionId = snzCurrentSection snz
-  return $ case snzDeep snz of
-    0 -> toRoman sectionId -- Roman
-    1 -> toAlpha sectionId -- Letter
-    _ -> show sectionId
+  let idList = (reverse $ snzCurrentSection snz : snzParentSections snz)
+  return . intercalate "." . map getnum $ zip [0..] idList
+  where
+    getnum (a, b) = case a of
+      0 -> toRoman b -- Roman
+      1 -> toAlpha b -- Alpha
+      _ -> show b    -- Numeric
 
 plainMode :: Bool -> State WriterState Bool
 plainMode mode = do
@@ -163,7 +165,7 @@ writeLog :: String -> State WriterState ()
 writeLog msg = modify (\s -> s { stLogs = msg : stLogs s })
 
 toAlpha :: Int -> String
-toAlpha m = concat [replicateM n ['A', 'Z'] | n <- [1..]] !! m
+toAlpha m = concat [replicateM n ['A'..'Z'] | n <- [0..]] !! m
 
 (<>) :: Node t => String -> t -> Element
 (<>) = unode
@@ -269,12 +271,14 @@ blockListToXML w xs = do
     sectionify [] = return []
     sectionify ((Right (level, id, title)) : xs) = do
       let (subtree, neighboor) = span (belongToSubtree level) xs
+      sectionId <- getSectionId -- We get the current section ID
+      modifySnz snzDown         -- We compute sub sections so let's go down
       xmlSubtree <- sectionify subtree
+      modifySnz snzUp           -- Go up, end of subsections
+      modifySnz snzInc          -- What happen next belong to the next section
       xmlNeighboor <- sectionify neighboor
-      sectionId <- getSectionId
       return $ (:)
-        --TODO : Add paragraph numbering through State WiterState.
-        ("section" <^> ["id" |= id] |. (("title" <^> title) : xmlSubtree))
+        ("section" <^> ["id" |= sectionId] |. (("title" <^> title) : xmlSubtree))
         (xmlNeighboor)
     sectionify ((Left x) : xs) = (x++) `fmap` sectionify xs
 
@@ -474,14 +478,18 @@ pandocToDvp w (Pandoc (Meta title authors date) blocks) = do
   content <- blockListToXML w blocks
   foot <- case isEnabled Ext_footnotes w of
     False -> return $ emptyXML
-    True  -> fmap (paragify . listify . refify) $ xmlify =<< gets stNotes
+    True  -> (paragify . listify . refify) =<< xmlify =<< gets stNotes
   return . renderDvp . concat $ [ headerblock
                                 , authorsblock
                                 , "summary" <!> (content ++ foot)
                                 ]
   where
-    paragify :: XML -> XML
-    paragify xml = "section" <!> (("title" <!> "Références") ++ xml)
+    paragify :: XML -> State WriterState XML
+    paragify xml = do
+      sectionId <- getSectionId
+       -- Since this function is the last building a section, we don't need:
+      modifySnz snzInc
+      return $ "section" <!> ["id" |= sectionId] |. (("title" <!> "Références") ++ xml)
     listify :: [XML] -> XML
     listify xmls = "liste" <!> ["type" |= "1"] |.
       map (\s -> "element" <^> ["useText" |= "0"] |. s) xmls

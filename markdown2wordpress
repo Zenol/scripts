@@ -1,0 +1,2 @@
+#!/bin/sh
+pandoc --gladtex --no-highlight | sed "s/<span class=\"..\">//g" | sed "s/<\/span>//g" | sed "s/<\/pre><\/code>/<\/pre>/g" | sed "s/<pre class=\"sourceCode \([a-zA-Z]*\)\"><code class=\"sourceCode cpp\">/<pre lang=\"\1\" colla=\"+\">/g"
